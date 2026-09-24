@@ -104,7 +104,12 @@ class JsonlSource:
             r = json.loads(line)
             if r.get("split", "train") != split:
                 continue
-            feats = {m: (s, store.row(s, r[m])) for m, s in stores.items() if r.get(m)}
+            feats = {}
+            for m, s in stores.items():
+                if r.get(m):
+                    feats[m] = (s, store.row(s, r[m]))
+                elif r.get(m + "s"):  # several images ("images": [...]) or clips
+                    feats[m] = [(s, store.row(s, x)) for x in r[m + "s"]]
             self.rows.append({"state": r.get("state", ""), "question": r["question"], "label": r["label"], "features": feats, "source": self.name})
 
     def samples(self, rng):
@@ -126,20 +131,27 @@ def collate(agent, store, samples, modalities, device, dtype=torch.float32):
     batch = {k: v.to(device) for k, v in collate_items(items, agent.tok.pad_token_id).items()}
     mods = {}
     for m in modalities:
+        # Each sample has no item, one (store, row), or a list of them (several images).
         refs = [s["features"].get(m) for s in samples]
         if not any(refs):
             continue
-        arrays = [store.get(*r) if r else None for r in refs]
-        shape = next(a.shape for a in arrays if a is not None)
-        t = max(a.shape[0] for a in arrays if a is not None)
-        feats = np.zeros((len(samples), t, shape[-1]), dtype=np.float32)
-        mask = np.zeros((len(samples), t), dtype=bool)
+        items = [[] if r is None else (r if isinstance(r, list) else [r]) for r in refs]
+        arrays = [[store.get(*x) for x in it] for it in items]
+        n = max(len(a) for a in arrays)
+        t = max(x.shape[0] for a in arrays for x in a)
+        d = next(x.shape[-1] for a in arrays for x in a)
+        feats = np.zeros((len(samples), n, t, d), dtype=np.float32)
+        mask = np.zeros((len(samples), n, t), dtype=bool)
         for i, a in enumerate(arrays):
-            if a is not None:
-                feats[i, : a.shape[0]] = a
-                mask[i, : a.shape[0]] = True
-        present = torch.tensor([r is not None for r in refs], device=device)
-        mods[m] = (torch.from_numpy(feats).to(device, dtype), torch.from_numpy(mask).to(device), present)
+            for j, x in enumerate(a):
+                feats[i, j, : x.shape[0]] = x
+                mask[i, j, : x.shape[0]] = True
+        present = torch.tensor([[j < len(a) for j in range(n)] for a in arrays], device=device)
+        feats, mask = torch.from_numpy(feats).to(device, dtype), torch.from_numpy(mask).to(device)
+        if n == 1:  # the common single-item case keeps the simpler (B, T, D) layout
+            mods[m] = (feats[:, 0], mask[:, 0], present[:, 0])
+        else:
+            mods[m] = (feats, mask, present)
     labels = torch.tensor([s["label"] for s in samples], device=device)
     return batch, mods, labels
 
