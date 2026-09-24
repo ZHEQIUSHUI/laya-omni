@@ -57,9 +57,9 @@ def main():
     rows = [json.loads(line) for line in open(args.data)]
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     if args.modality == "audio":
-        paths = sorted({r["audio"] for r in rows if r.get("audio")})
+        paths = sorted({p for r in rows for p in ([r["audio"]] if r.get("audio") else r.get("audios", []))})
         return cache_spans(args, paths, AudioEncoder(args.encoder, device=args.device, output=args.audio_output), load_audio)
-    paths = sorted({r["image"] for r in rows if r.get("image")})
+    paths = sorted({p for r in rows for p in ([r["image"]] if r.get("image") else r.get("images", []))})
     enc = image_encoder(args.encoder, device=args.device, pool=args.pool)
     if not hasattr(enc, "pool"):  # native resolution: token counts differ per image
         return cache_spans(args, paths, enc, lambda p: Image.open(p).convert("RGB"))
