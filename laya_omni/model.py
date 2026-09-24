@@ -14,6 +14,11 @@ into the decision head, Flamingo-style, was tried first and could not learn:
 the frozen head's residual stream is two orders of magnitude larger than the
 updates, and early on every option marker reads the same thing.)
 
+Optionally (lora_rank > 0) the frozen encoder and decision head get LoRA deltas
+that act only on rows carrying an image or audio: a frozen projector alone
+learns simple visual mappings (game frames) but underfits general visual
+questions, and gating the deltas by row keeps text-only rows exactly Laya's.
+
 With no image and no audio nothing is inserted and the output is the original
 Laya output bit for bit.
 """
@@ -54,15 +59,43 @@ class Projector(nn.Sequential):
 
 
 MODALITIES = ("image", "audio")
+# Linear layers that get a LoRA delta: ModernBERT's attention and MLP projections,
+# and the decision head's feed-forward layers.
+LORA_TARGETS = ("attn.Wqkv", "attn.Wo", "mlp.Wi", "mlp.Wo", "linear1", "linear2")
+
+
+class LoRA(nn.Module):
+    """Low-rank delta B @ A for one frozen linear layer; B starts at zero."""
+
+    def __init__(self, in_features, out_features, rank, alpha):
+        super().__init__()
+        self.A = nn.Parameter(torch.randn(rank, in_features) / in_features**0.5)
+        self.B = nn.Parameter(torch.zeros(out_features, rank))
+        self.scale = alpha / rank
+
+    def forward(self, x):
+        return (x.to(self.A.dtype) @ self.A.T @ self.B.T) * self.scale
 
 
 class OmniFusion(nn.Module):
-    """All trainable multimodal parameters; saved and shipped separately from Laya."""
+    """All trainable multimodal parameters; saved and shipped separately from Laya.
 
-    def __init__(self, dims, in_dims, max_items=8, max_frames=1024):
+    With `lora_rank`, the frozen encoder and decision head also get LoRA deltas,
+    applied only to rows that carry an image or audio: Laya itself stays frozen,
+    and text-only rows compute exactly what Laya computes.
+    """
+
+    def __init__(self, dims, in_dims, max_items=8, max_frames=1024, lora_rank=0, lora_alpha=None, lora_layers=None):
         super().__init__()
         self.in_dims = dict(in_dims)
         self.max_items = max_items
+        self.lora_rank = lora_rank
+        self.lora_alpha = lora_alpha or 2 * max(lora_rank, 1)
+        # Filled by attach(): module path -> LoRA ("." is not allowed in ModuleDict keys).
+        self.lora = nn.ModuleDict()
+        self.lora_layers = list(lora_layers or [])
+        self.row_mask = None  # set per forward: which rows carry a modality
+        self._hooks = []
         self.projectors = nn.ModuleDict({m: Projector(d, dims) for m, d in self.in_dims.items()})
         self.modality_emb = nn.ParameterDict({m: nn.Parameter(torch.zeros(dims)) for m in self.in_dims})
         # Which image (or clip) a token came from, so a question can say "the second image",
@@ -101,6 +134,41 @@ class OmniFusion(nn.Module):
             valid.append(ok.reshape(b, n * t))
         return torch.cat(tokens, 1), torch.cat(valid, 1)
 
+    def attach(self, model):
+        """Hook LoRA deltas onto the model's target linear layers (creating them the
+        first time). Hooks leave parameter names alone, so Laya's checkpoint still
+        loads strictly and the deltas live, and are saved, with the fusion."""
+        for h in self._hooks:
+            h.remove()
+        self._hooks = []
+        if not self.lora_rank:
+            return
+        names = self.lora_layers or [
+            n for n, m in model.named_modules()
+            if isinstance(m, nn.Linear) and n.startswith(("encoder.", "head.")) and n.endswith(LORA_TARGETS)
+        ]
+        self.lora_layers = names
+        modules = dict(model.named_modules())
+        for name in names:
+            key = name.replace(".", "__")
+            linear = modules[name]
+            if key not in self.lora:
+                self.lora[key] = LoRA(linear.in_features, linear.out_features, self.lora_rank, self.lora_alpha).to(
+                    linear.weight.device
+                )
+            self._hooks.append(linear.register_forward_hook(self._hook(self.lora[key])))
+
+    def _hook(self, lora):
+        def hook(module, inputs, output):
+            if self.row_mask is None:
+                return None
+            if output.dim() != 3 or output.shape[0] != self.row_mask.shape[0]:
+                raise RuntimeError("LoRA rows need padded (batch, length, dims) activations")
+            delta = lora(inputs[0]).to(output.dtype)
+            return output + delta * self.row_mask[:, None, None].to(output.dtype)
+
+        return hook
+
 
 class DecisionModel(nn.Module):
     def __init__(self, encoder, agent_config, fusion=None):
@@ -115,6 +183,11 @@ class DecisionModel(nn.Module):
         )
         self.register_buffer("temperature", torch.ones(3))
         self.fusion = fusion
+
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if name == "fusion" and value is not None:
+            value.attach(self)  # hook the fusion's LoRA deltas onto this model's layers
 
     def splice(self, input_ids, attention_mask, marker_pos, modalities):
         """Embed text and place each row's real modality tokens right after [CLS].
@@ -141,15 +214,23 @@ class DecisionModel(nn.Module):
 
     def forward(self, input_ids, attention_mask, marker_pos, marker_mask, qtype, modalities=None):
         """modalities: optional {"image"|"audio": (feats, mask, present)}; None or {} = pure Laya."""
-        if modalities and self.fusion is not None:
-            embeds, attention_mask, marker_pos = self.splice(input_ids, attention_mask, marker_pos, modalities)
-            h = self.encoder(inputs_embeds=embeds, attention_mask=attention_mask).last_hidden_state
-        else:
-            h = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
-        h = h + self.type_emb(qtype)[:, None, :]
-        pad = ~attention_mask.bool()
-        for layer in self.head.layers:
-            h = layer(h, pad)
+        fused = bool(modalities) and self.fusion is not None
+        try:
+            if fused:
+                n_before = attention_mask.sum(1)
+                embeds, attention_mask, marker_pos = self.splice(input_ids, attention_mask, marker_pos, modalities)
+                # LoRA deltas apply only to rows that actually got modality tokens.
+                self.fusion.row_mask = (attention_mask.sum(1) > n_before).float()
+                h = self.encoder(inputs_embeds=embeds, attention_mask=attention_mask).last_hidden_state
+            else:
+                h = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+            h = h + self.type_emb(qtype)[:, None, :]
+            pad = ~attention_mask.bool()
+            for layer in self.head.layers:
+                h = layer(h, pad)
+        finally:
+            if fused:
+                self.fusion.row_mask = None
         rows = torch.arange(h.shape[0], device=h.device)[:, None]
         markers = h[rows, marker_pos.clamp(min=0)]
         logits = self.scorer(markers).squeeze(-1).float()

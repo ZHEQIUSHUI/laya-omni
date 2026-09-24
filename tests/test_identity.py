@@ -11,7 +11,7 @@ from laya_omni.model import DecisionModel, OmniFusion
 IN_DIMS = {"image": 48, "audio": 40}
 
 
-def tiny_models(seed=0):
+def tiny_models(seed=0, lora=0):
     torch.manual_seed(seed)
     cfg = ModernBertConfig(
         vocab_size=128, hidden_size=128, intermediate_size=256, num_hidden_layers=3,
@@ -20,7 +20,11 @@ def tiny_models(seed=0):
     cfg._attn_implementation = "sdpa"
     base = DecisionModel(ModernBertModel(cfg), {"head_layers": 2}).eval()
     omni = copy.deepcopy(base)
-    omni.fusion = OmniFusion(128, IN_DIMS).eval()
+    omni.fusion = OmniFusion(128, IN_DIMS, lora_rank=lora).eval()
+    if lora:  # give the zero-initialised deltas something to do
+        with torch.no_grad():
+            for m in omni.fusion.lora.values():
+                m.B.normal_(std=0.5)
     return base, omni
 
 
@@ -47,18 +51,20 @@ def feats(n=3):
     }
 
 
+@pytest.mark.parametrize("lora", [0, 4])
 @torch.no_grad()
-def test_no_modality_is_bit_identical():
-    base, omni = tiny_models()
+def test_no_modality_is_bit_identical(lora):
+    base, omni = tiny_models(lora=lora)
     b = batch()
     for mods in (None, {}):
         for got, want in zip(omni(**b, modalities=mods), base(**b)):
             assert torch.equal(got, want)
 
 
+@pytest.mark.parametrize("lora", [0, 4])
 @torch.no_grad()
-def test_rows_without_modality_match_laya_in_a_mixed_batch():
-    base, omni = tiny_models()
+def test_rows_without_modality_match_laya_in_a_mixed_batch(lora):
+    base, omni = tiny_models(lora=lora)
     b, m = batch(), feats()
     present = torch.tensor([True, False, True])  # row 1 has neither image nor audio
     m = {k: (f, mask, present) for k, (f, mask, _) in m.items()}
@@ -120,3 +126,18 @@ def test_only_fusion_trains():
     grads = {n for n, p in omni.named_parameters() if p.grad is not None}
     assert grads and all(n.startswith("fusion.") for n in grads)
     assert omni.fusion.projectors["image"][1].weight.grad.abs().sum() > 0
+
+
+def test_lora_hooks_the_encoder_and_head_and_trains():
+    _, omni = tiny_models(lora=4)
+    names = omni.fusion.lora_layers
+    assert any(n.startswith("encoder.") for n in names) and any(n.startswith("head.") for n in names)
+    assert omni.fusion.row_mask is None
+    # Laya's own parameter names are untouched: its checkpoint still loads strictly.
+    assert not any("lora" in n for n, _ in omni.named_parameters() if not n.startswith("fusion."))
+    for name, p in omni.named_parameters():
+        p.requires_grad_(name.startswith("fusion."))
+    logits, _ = omni(**batch(), modalities=feats())
+    logits.logsumexp(-1).sum().backward()
+    assert all(m.A.grad is not None and m.A.grad.abs().sum() > 0 for m in omni.fusion.lora.values())
+    assert omni.fusion.row_mask is None  # cleared after the forward

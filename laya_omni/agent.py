@@ -113,9 +113,13 @@ class Agent:
             self.fusion_cfg["in_dims"],
             self.fusion_cfg.get("max_items", 8),
             self.fusion_cfg.get("max_frames", 1024),
+            lora_rank=self.fusion_cfg.get("lora_rank", 0),
+            lora_alpha=self.fusion_cfg.get("lora_alpha"),
+            lora_layers=self.fusion_cfg.get("lora_layers"),
         )
+        self.model.fusion = fusion  # attaching creates the LoRA modules the weights fill
         fusion.load_state_dict(load_file(path / "fusion.safetensors"), strict=True)
-        self.model.fusion = fusion.to(self.device, self.dtype).eval()
+        fusion.to(self.device, self.dtype).eval()
 
     def prepare(self, state, questions):
         items, internal = [], []

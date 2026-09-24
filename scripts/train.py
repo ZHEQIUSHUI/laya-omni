@@ -38,18 +38,25 @@ def build_sources(args, store, split):
         for game in holdout:  # never trained on: all of its frames are test frames
             sources += [GameSource(game_dir, game, s, store, f"game:{game}", augment=not args.no_augment) for s in ("train", "test")]
             sources[-2].name = sources[-1].name = f"holdout:{game}"
-    for path in args.jsonl:
+    jsonl = [(p, False) for p in args.jsonl] + ([(p, True) for p in args.holdout_jsonl] if split == "test" else [])
+    for path, held_out in jsonl:
         # The rows' own keys say which modality a dataset carries.
         with open(path) as f:
             first = json.loads(f.readline())
         stores = {}
         for modality, root in (("image", args.features), ("audio", args.audio_features)):
-            if first.get(modality):
+            if first.get(modality) or first.get(modality + "s"):
                 name = f"{modality}:{Path(path).stem}"
                 if name not in store.arrays:
                     store.add(name, Path(root) / Path(path).stem)
                 stores[modality] = name
-        sources.append(JsonlSource(path, split, store, stores, shuffle_options=split == "train"))
+        if held_out:  # never trained on: every row is a test row
+            parts = [JsonlSource(path, s, store, stores, shuffle_options=False) for s in ("train", "test")]
+            parts[0].rows += parts[1].rows
+            parts[0].name = f"holdout:{Path(path).stem}"
+            sources.append(parts[0])
+        else:
+            sources.append(JsonlSource(path, split, store, stores, shuffle_options=split == "train"))
     return [s for s in sources if (s.rows if hasattr(s, "rows") else True)]
 
 
@@ -91,6 +98,7 @@ def main():
     ap.add_argument("--games", default="", help="data_dir:game1,game2 (trained on)")
     ap.add_argument("--holdout-games", default="", help="games evaluated zero-shot, never trained on")
     ap.add_argument("--jsonl", action="append", default=[], help="converted dataset (repeatable)")
+    ap.add_argument("--holdout-jsonl", action="append", default=[], help="dataset evaluated zero-shot, never trained on")
     ap.add_argument("--cap", type=int, default=0, help="max samples per source per epoch")
     ap.add_argument("--out", required=True)
     ap.add_argument("--no-augment", action="store_true", help="games: one phrasing, one label set, fixed order")
@@ -98,6 +106,8 @@ def main():
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--checkpointing", action="store_true", help="recompute encoder activations to save memory")
+    ap.add_argument("--lora", type=int, default=0, help="LoRA rank for the frozen encoder and head (modality rows only)")
+    ap.add_argument("--lora-lr", type=float, default=2e-4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
@@ -111,19 +121,22 @@ def main():
     in_dims = {}
     for name in store.arrays:  # "game:x" stores are images; others are "<modality>:<dataset>"
         in_dims.setdefault("image" if name.startswith("game:") else name.split(":", 1)[0], store.dims(name))
-    model.fusion = OmniFusion(model.encoder.config.hidden_size, in_dims).to(args.device)
+    model.fusion = OmniFusion(model.encoder.config.hidden_size, in_dims, lora_rank=args.lora).to(args.device)
     if args.checkpointing:
         model.encoder.gradient_checkpointing_enable()
     for name, p in model.named_parameters():
         p.requires_grad_(name.startswith("fusion."))
     params = [p for p in model.parameters() if p.requires_grad]
     print("train", {s.name: len(s.rows) for s in train}, "test", {s.name: len(s.rows) for s in test})
-    print(f"trainable {sum(p.numel() for p in params) / 1e6:.2f}M")
+    print(f"trainable {sum(p.numel() for p in params) / 1e6:.2f}M, of which LoRA {sum(p.numel() for n, p in model.named_parameters() if 'fusion.lora.' in n) / 1e6:.2f}M")
 
     per_epoch = len(mix(train, seeded(0), args.cap or None))
     steps = args.epochs * math.ceil(per_epoch / args.batch)
     warm = max(1, min(300, steps // 10))
-    opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.01)
+    lora = [p for n, p in model.named_parameters() if p.requires_grad and n.startswith("fusion.lora.")]
+    rest = [p for n, p in model.named_parameters() if p.requires_grad and not n.startswith("fusion.lora.")]
+    groups = [{"params": rest, "lr": args.lr}] + ([{"params": lora, "lr": args.lora_lr}] if lora else [])
+    opt = torch.optim.AdamW(groups, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1, (s + 1) / warm) * 0.5 * (1 + math.cos(math.pi * min(1, s / steps)))
     )
@@ -133,7 +146,7 @@ def main():
     log = open(out / "log.jsonl", "a")
     base = evaluate(agent, store, test, args.device)
     print(json.dumps({"epoch": -1, **base}, ensure_ascii=False), flush=True)
-    step, t0 = 0, time.time()
+    step, t0, best = 0, time.time(), float("inf")
     for epoch in range(args.epochs):
         model.eval()  # frozen parts keep dropout off; the fusion has no dropout
         epoch_samples = mix(train, rng, args.cap or None)
@@ -154,9 +167,26 @@ def main():
         print(json.dumps({"epoch": epoch, **metrics}, ensure_ascii=False), flush=True)
         log.write(json.dumps({"epoch": epoch, "step": step, "metrics": metrics}) + "\n")
         log.flush()
-        save_file({k: v.detach().cpu().contiguous() for k, v in model.fusion.state_dict().items()}, out / "fusion.safetensors")
+        # Keep the epoch with the best mean test NLL: on small data accuracy plateaus
+        # while the probabilities keep getting more overconfident.
+        score = sum(v["with"]["nll"] for v in metrics.values()) / len(metrics)
+        if score < best:
+            best = score
+            save_file({k: v.detach().cpu().contiguous() for k, v in model.fusion.state_dict().items()}, out / "fusion.safetensors")
+            (out / "best.json").write_text(json.dumps({"epoch": epoch, "mean_nll": score, "metrics": metrics}, indent=1) + "\n")
         (out / "fusion_config.json").write_text(
-            json.dumps({"in_dims": in_dims, "max_items": model.fusion.max_items, "max_frames": model.fusion.frame_emb.shape[0], "laya": str(args.laya)}, indent=2) + "\n"
+            json.dumps(
+                {
+                    "in_dims": in_dims,
+                    "max_items": model.fusion.max_items,
+                    "max_frames": model.fusion.frame_emb.shape[0],
+                    "lora_rank": model.fusion.lora_rank,
+                    "lora_alpha": model.fusion.lora_alpha,
+                    "lora_layers": model.fusion.lora_layers,
+                    "laya": str(args.laya),
+                },
+                indent=2,
+            ) + "\n"
         )
     print("saved", out)
 
