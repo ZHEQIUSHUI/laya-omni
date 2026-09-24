@@ -104,6 +104,7 @@ def main():
     ap.add_argument("--no-augment", action="store_true", help="games: one phrasing, one label set, fixed order")
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument("--accum", type=int, default=1, help="micro-batches per optimizer step (effective batch = batch x accum)")
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--checkpointing", action="store_true", help="recompute encoder activations to save memory")
     ap.add_argument("--lora", type=int, default=0, help="LoRA rank for the frozen encoder and head (modality rows only)")
@@ -131,7 +132,7 @@ def main():
     print(f"trainable {sum(p.numel() for p in params) / 1e6:.2f}M, of which LoRA {sum(p.numel() for n, p in model.named_parameters() if 'fusion.lora.' in n) / 1e6:.2f}M")
 
     per_epoch = len(mix(train, seeded(0), args.cap or None))
-    steps = args.epochs * math.ceil(per_epoch / args.batch)
+    steps = args.epochs * math.ceil(per_epoch / (args.batch * args.accum))
     warm = max(1, min(300, steps // 10))
     lora = [p for n, p in model.named_parameters() if p.requires_grad and n.startswith("fusion.lora.")]
     rest = [p for n, p in model.named_parameters() if p.requires_grad and not n.startswith("fusion.lora.")]
@@ -146,7 +147,7 @@ def main():
     log = open(out / "log.jsonl", "a")
     base = evaluate(agent, store, test, args.device)
     print(json.dumps({"epoch": -1, **base}, ensure_ascii=False), flush=True)
-    step, t0, best = 0, time.time(), float("inf")
+    step, micro, t0, best = 0, 0, time.time(), float("inf")
     for epoch in range(args.epochs):
         model.eval()  # frozen parts keep dropout off; the fusion has no dropout
         epoch_samples = mix(train, rng, args.cap or None)
@@ -155,10 +156,13 @@ def main():
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 logits, _ = model(**b, modalities=mods)
             loss = F.cross_entropy(logits.float(), y)
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
+            (loss / args.accum).backward()
+            micro += 1
+            if micro % args.accum:
+                continue
             torch.nn.utils.clip_grad_norm_(params, 1.0)
             opt.step()
+            opt.zero_grad(set_to_none=True)
             sched.step()
             step += 1
             if step % 100 == 0:
