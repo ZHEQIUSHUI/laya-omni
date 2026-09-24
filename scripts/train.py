@@ -33,10 +33,10 @@ def build_sources(args, store, split):
         if f"game:{game}" not in store.arrays:
             store.add(f"game:{game}", Path(args.features) / game)
     for game in names:
-        sources.append(GameSource(game_dir, game, split, store, f"game:{game}"))
+        sources.append(GameSource(game_dir, game, split, store, f"game:{game}", augment=not args.no_augment))
     if split == "test":
         for game in holdout:  # never trained on: all of its frames are test frames
-            sources += [GameSource(game_dir, game, s, store, f"game:{game}") for s in ("train", "test")]
+            sources += [GameSource(game_dir, game, s, store, f"game:{game}", augment=not args.no_augment) for s in ("train", "test")]
             sources[-2].name = sources[-1].name = f"holdout:{game}"
     for path in args.jsonl:
         name = Path(path).stem
@@ -59,8 +59,8 @@ def evaluate(agent, store, sources, device, batch_size=256, limit=4000):
     for start in range(0, len(samples), batch_size):
         chunk = samples[start : start + batch_size]
         b, mods, y = collate(agent, store, chunk, ("image", "audio"), device)
-        hidden = model.encode(b["input_ids"], b["attention_mask"], b["qtype"])
-        runs = {"with": model(**b, modalities=mods, hidden=hidden)[0], "without": model(**b, hidden=hidden)[0]}
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            runs = {"with": model(**b, modalities=mods)[0], "without": model(**b)[0]}
         for name, lg in runs.items():
             p = lg.softmax(-1)
             for s, row, pi, yi in zip(chunk, lg, p, y):
@@ -85,11 +85,11 @@ def main():
     ap.add_argument("--jsonl", action="append", default=[], help="converted dataset (repeatable)")
     ap.add_argument("--cap", type=int, default=0, help="max samples per source per epoch")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--latents", type=int, default=32)
-    ap.add_argument("--depth", type=int, default=2)
+    ap.add_argument("--no-augment", action="store_true", help="games: one phrasing, one label set, fixed order")
     ap.add_argument("--epochs", type=int, default=10)
-    ap.add_argument("--batch", type=int, default=64)
-    ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--checkpointing", action="store_true", help="recompute encoder activations to save memory")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
@@ -101,7 +101,9 @@ def main():
     store = FeatureStore()
     train, test = build_sources(args, store, "train"), build_sources(args, store, "test")
     in_dims = {"image": store.dims(next(iter(store.arrays)))}
-    model.fusion = OmniFusion(model.encoder.config.hidden_size, len(model.head.layers), in_dims, args.latents, args.depth).to(args.device)
+    model.fusion = OmniFusion(model.encoder.config.hidden_size, in_dims).to(args.device)
+    if args.checkpointing:
+        model.encoder.gradient_checkpointing_enable()
     for name, p in model.named_parameters():
         p.requires_grad_(name.startswith("fusion."))
     params = [p for p in model.parameters() if p.requires_grad]
@@ -127,10 +129,8 @@ def main():
         epoch_samples = mix(train, rng, args.cap or None)
         for start in range(0, len(epoch_samples), args.batch):
             b, mods, y = collate(agent, store, epoch_samples[start : start + args.batch], ("image", "audio"), args.device)
-            with torch.no_grad():
-                hidden = model.encode(b["input_ids"], b["attention_mask"], b["qtype"])
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                logits, _ = model(**b, modalities=mods, hidden=hidden)
+                logits, _ = model(**b, modalities=mods)
             loss = F.cross_entropy(logits.float(), y)
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -139,15 +139,14 @@ def main():
             sched.step()
             step += 1
             if step % 100 == 0:
-                gates = [round(float(torch.tanh(bl.attn_gate)), 3) for bl in model.fusion.blocks]
-                print(f"ep {epoch} step {step}/{steps} loss {loss.item():.4f} gates {gates} {time.time() - t0:.0f}s", flush=True)
+                print(f"ep {epoch} step {step}/{steps} loss {loss.item():.4f} {time.time() - t0:.0f}s", flush=True)
         metrics = evaluate(agent, store, test, args.device)
         print(json.dumps({"epoch": epoch, **metrics}, ensure_ascii=False), flush=True)
         log.write(json.dumps({"epoch": epoch, "step": step, "metrics": metrics}) + "\n")
         log.flush()
         save_file({k: v.detach().cpu().contiguous() for k, v in model.fusion.state_dict().items()}, out / "fusion.safetensors")
         (out / "fusion_config.json").write_text(
-            json.dumps({"in_dims": in_dims, "num_latents": args.latents, "depth": args.depth, "laya": str(args.laya)}, indent=2) + "\n"
+            json.dumps({"in_dims": in_dims, "max_items": model.fusion.max_items, "max_frames": model.fusion.frame_emb.shape[0], "laya": str(args.laya)}, indent=2) + "\n"
         )
     print("saved", out)
 

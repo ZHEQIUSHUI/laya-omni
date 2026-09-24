@@ -58,7 +58,7 @@ def shuffled(question, label, rng):
 class GameSource:
     """Frames from scripts/make_game_data.py, each asked with a random phrasing and label set."""
 
-    def __init__(self, data_dir, game, split, store, store_name):
+    def __init__(self, data_dir, game, split, store, store_name, augment=True):
         spec = json.loads((Path(data_dir) / "questions.json").read_text())
         self.name, self.state, self.spec = f"game:{game}", spec["state"], spec["questions"][game]
         self.rows = []
@@ -66,11 +66,15 @@ class GameSource:
             r = json.loads(line)
             if r["split"] == split:
                 self.rows.append((store.row(store_name, r["image"]), r["label"]))
-        self.store_name = store_name
+        self.store_name, self.augment = store_name, augment
 
     def samples(self, rng):
         out = []
         for row, label in self.rows:
+            if not self.augment:  # the first phrasing and label set, canonical order
+                q = {"type": "choice", "instructions": self.spec["instructions"][0], "criteria": self.spec["labels"][0]}
+                out.append({"state": self.state, "question": q, "label": label, "features": {"image": (self.store_name, row)}, "source": self.name})
+                continue
             q = {
                 "type": "choice",
                 "instructions": rng.choice(self.spec["instructions"]),

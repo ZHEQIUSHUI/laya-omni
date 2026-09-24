@@ -110,10 +110,9 @@ class Agent:
         self.fusion_cfg = json.loads((path / "fusion_config.json").read_text())
         fusion = OmniFusion(
             self.model.encoder.config.hidden_size,
-            len(self.model.head.layers),
             self.fusion_cfg["in_dims"],
-            self.fusion_cfg.get("num_latents", 32),
-            self.fusion_cfg.get("depth", 2),
+            self.fusion_cfg.get("max_items", 8),
+            self.fusion_cfg.get("max_frames", 1024),
         )
         fusion.load_state_dict(load_file(path / "fusion.safetensors"), strict=True)
         self.model.fusion = fusion.to(self.device, self.dtype).eval()
