@@ -128,16 +128,32 @@ class Agent:
             internal.append(q)
         return items, internal
 
+    def _features(self, feats):
+        if isinstance(feats, torch.Tensor):
+            return feats.detach().to(self.device, self.dtype)
+        return torch.as_tensor(np.asarray(feats), dtype=self.dtype, device=self.device)
+
     def _modalities(self, n, image, audio):
-        """Each argument is precomputed encoder features: (T, D) array/tensor or None."""
+        """Each argument is encoder features, or None: one (T, D) array or tensor, or a
+        list of them for several images / clips (lengths may differ)."""
         out = {}
         for name, feats in (("image", image), ("audio", audio)):
             if feats is None:
                 continue
             if self.model.fusion is None or name not in self.model.fusion.in_dims:
                 raise ValueError(f"No fusion weights loaded for {name!r}")
-            f = torch.as_tensor(np.asarray(feats), dtype=self.dtype, device=self.device)
-            out[name] = (f[None].expand(n, -1, -1), None, None)
+            if isinstance(feats, (list, tuple)):
+                items = [self._features(f) for f in feats]
+                t = max(f.shape[0] for f in items)
+                stacked = torch.zeros(len(items), t, items[0].shape[-1], dtype=self.dtype, device=self.device)
+                mask = torch.zeros(len(items), t, dtype=torch.bool, device=self.device)
+                for i, f in enumerate(items):
+                    stacked[i, : f.shape[0]] = f
+                    mask[i, : f.shape[0]] = True
+                out[name] = (stacked[None].expand(n, -1, -1, -1), mask[None].expand(n, -1, -1), None)
+            else:
+                f = self._features(feats)
+                out[name] = (f[None].expand(n, -1, -1), None, None)
         return out
 
     @torch.inference_mode()

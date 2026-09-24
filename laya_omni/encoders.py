@@ -1,4 +1,4 @@
-"""Frozen feature encoders. Their outputs are what the fusion resamplers read.
+"""Frozen feature encoders. Their outputs are what the fusion projectors read.
 
 Encoders are never trained. Training caches their features once; inference
 runs them per request. Features are (T, D) float tensors on the encoder device.
@@ -124,3 +124,62 @@ class AudioEncoder:
             packed = self.projector(packed)
         out = list(packed.split(self.lengths(mask).tolist()))
         return out[0] if single else out
+
+
+class QwenImageEncoder:
+    """The vision tower of a Qwen3.5 model at native resolution.
+
+    Loads the standalone directory written by scripts/extract_vision_encoder.py
+    with transformers' own Qwen3_5VisionModel. Each image keeps its aspect ratio and
+    is resized to between `min_pixels` and `max_pixels`; every 32x32 pixels become
+    one token. `output="merged"` returns the tower's 2x2-merged tokens, the ones
+    Qwen3.5 feeds its language model (out_hidden_size); `output="patch"` returns the
+    16x16 patch states before merging (hidden_size, four times as many tokens).
+    Images give different token counts, so results are lists of (T, D) tensors.
+    """
+
+    name = "image"
+
+    def __init__(self, path, device="cuda", dtype=torch.float16, output="merged", min_pixels=256 * 256, max_pixels=512 * 512):
+        from safetensors.torch import load_file
+        from transformers import AutoImageProcessor
+        from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
+        from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
+
+        if output not in ("merged", "patch"):
+            raise ValueError("output must be 'merged' or 'patch'")
+        cfg = Qwen3_5VisionConfig.from_pretrained(path)
+        self.processor = AutoImageProcessor.from_pretrained(
+            path, size={"shortest_edge": min_pixels, "longest_edge": max_pixels}
+        )
+        self.model = Qwen3_5VisionModel(cfg)
+        self.model.load_state_dict(load_file(f"{path}/model.safetensors"), strict=True)
+        self.model.to(device, dtype).eval()
+        self.device, self.dtype, self.output = device, dtype, output
+        self.merge = cfg.spatial_merge_size**2
+        self.dims = cfg.out_hidden_size if output == "merged" else cfg.hidden_size
+
+    @torch.inference_mode()
+    def __call__(self, images):
+        """images: a PIL image or list of them -> (T, D) features (or a list)."""
+        single = not isinstance(images, (list, tuple))
+        batch = self.processor(images=[images] if single else list(images), return_tensors="pt")
+        grid = batch["image_grid_thw"].to(self.device)
+        out = self.model(batch["pixel_values"].to(self.device, self.dtype), grid_thw=grid)
+        if self.output == "merged":
+            feats, sizes = out.pooler_output, (grid.prod(-1) // self.merge).tolist()
+        else:
+            feats, sizes = out.last_hidden_state, grid.prod(-1).tolist()
+        parts = list(feats.split(sizes))
+        return parts[0] if single else parts
+
+
+def image_encoder(path, **kwargs):
+    """SigLIP-style (fixed size) or Qwen3.5 vision tower, chosen by the directory's config."""
+    import json
+    from pathlib import Path
+
+    kind = json.loads((Path(path) / "config.json").read_text()).get("model_type", "")
+    if kind.startswith("qwen3_5"):
+        return QwenImageEncoder(path, **{k: v for k, v in kwargs.items() if k != "pool"})
+    return ImageEncoder(path, **{k: v for k, v in kwargs.items() if k in ("device", "dtype", "pool")})

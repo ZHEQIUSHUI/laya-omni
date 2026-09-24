@@ -20,7 +20,11 @@ from .agent import collate_items
 
 
 class FeatureStore:
-    """Named (N, T, D) float16 feature arrays written by scripts/cache_features.py."""
+    """Named float16 feature arrays written by scripts/cache_features.py.
+
+    Fixed-size features (images) are (N, T, D) and indexed by row; variable-length
+    ones (audio) are (total frames, D) with a [start, end) span per clip.
+    """
 
     def __init__(self):
         self.arrays, self.index = {}, {}
@@ -28,7 +32,8 @@ class FeatureStore:
     def add(self, name, prefix):
         prefix = Path(prefix)
         self.arrays[name] = np.load(prefix.with_suffix(".npy"), mmap_mode="r")
-        self.index[name] = json.loads(prefix.with_suffix(".json").read_text())["index"]
+        meta = json.loads(prefix.with_suffix(".json").read_text())
+        self.index[name] = meta["index"] if "index" in meta else meta["spans"]
         return self
 
     def row(self, name, key):
@@ -38,6 +43,8 @@ class FeatureStore:
         return self.arrays[name].shape[-1]
 
     def get(self, name, row):
+        if isinstance(row, (list, tuple)):
+            return self.arrays[name][row[0] : row[1]]
         return self.arrays[name][row]
 
 

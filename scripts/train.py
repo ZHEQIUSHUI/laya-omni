@@ -39,10 +39,17 @@ def build_sources(args, store, split):
             sources += [GameSource(game_dir, game, s, store, f"game:{game}", augment=not args.no_augment) for s in ("train", "test")]
             sources[-2].name = sources[-1].name = f"holdout:{game}"
     for path in args.jsonl:
-        name = Path(path).stem
-        if name not in store.arrays:
-            store.add(name, Path(args.features) / name)
-        sources.append(JsonlSource(path, split, store, {"image": name}, shuffle_options=split == "train"))
+        # The rows' own keys say which modality a dataset carries.
+        with open(path) as f:
+            first = json.loads(f.readline())
+        stores = {}
+        for modality, root in (("image", args.features), ("audio", args.audio_features)):
+            if first.get(modality):
+                name = f"{modality}:{Path(path).stem}"
+                if name not in store.arrays:
+                    store.add(name, Path(root) / Path(path).stem)
+                stores[modality] = name
+        sources.append(JsonlSource(path, split, store, stores, shuffle_options=split == "train"))
     return [s for s in sources if (s.rows if hasattr(s, "rows") else True)]
 
 
@@ -79,7 +86,8 @@ def evaluate(agent, store, sources, device, batch_size=256, limit=4000):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--laya", required=True)
-    ap.add_argument("--features", required=True, help="directory of cached image features, one prefix per dataset")
+    ap.add_argument("--features", default="", help="directory of cached image features, one prefix per dataset")
+    ap.add_argument("--audio-features", default="", help="directory of cached audio features, one prefix per dataset")
     ap.add_argument("--games", default="", help="data_dir:game1,game2 (trained on)")
     ap.add_argument("--holdout-games", default="", help="games evaluated zero-shot, never trained on")
     ap.add_argument("--jsonl", action="append", default=[], help="converted dataset (repeatable)")
@@ -100,7 +108,9 @@ def main():
     model = agent.model
     store = FeatureStore()
     train, test = build_sources(args, store, "train"), build_sources(args, store, "test")
-    in_dims = {"image": store.dims(next(iter(store.arrays)))}
+    in_dims = {}
+    for name in store.arrays:  # "game:x" stores are images; others are "<modality>:<dataset>"
+        in_dims.setdefault("image" if name.startswith("game:") else name.split(":", 1)[0], store.dims(name))
     model.fusion = OmniFusion(model.encoder.config.hidden_size, in_dims).to(args.device)
     if args.checkpointing:
         model.encoder.gradient_checkpointing_enable()
