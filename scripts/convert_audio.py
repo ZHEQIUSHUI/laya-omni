@@ -7,6 +7,8 @@ are a random subset around the answer, and noul questions are balanced.
 
     python scripts/convert_audio.py esc50 datasets/esc50 --out data/audio
     python scripts/convert_audio.py cremad datasets/CREMA-D --out data/audio
+    python scripts/convert_audio.py vocalsound datasets/vocalsound --out data/audio
+    python scripts/convert_audio.py gtzan datasets/gtzan --out data/audio
 """
 
 import argparse
@@ -111,7 +113,73 @@ def cremad(src, rng):
             yield split, r["file"], r["audio"], {"state": STATE, "question": q, "label": int(gender == "female")}
 
 
-CONVERTERS = {"esc50": esc50, "cremad": cremad}
+VOCAL = {
+    "Laughter": ("laughter", "笑声"),
+    "Sigh": ("a sigh", "叹气"),
+    "Cough": ("a cough", "咳嗽"),
+    "Throat clearing": ("throat clearing", "清嗓子"),
+    "Sneeze": ("a sneeze", "打喷嚏"),
+    "Sniff": ("a sniff", "吸鼻子"),
+}
+VOCAL_ASK = ["What sound does the person make?", "Which vocal sound is this?", "What is the person doing?"]
+VOCAL_ASK_ZH = ["这个人发出的是什么声音？", "这是哪种人声？"]
+VOCAL_IS = ["Is this {}?", "Does the clip contain {}?"]
+
+
+def vocalsound(src, rng):
+    """Non-speech vocal sounds; its val and test speakers do not overlap, so val trains."""
+    for path in sorted(glob.glob(str(Path(src) / "**/*.parquet"), recursive=True)):
+        split = "test" if Path(path).name.startswith("test") else "train"
+        for i, r in enumerate(pq.read_table(path).to_pylist()):
+            if r["answer"] not in VOCAL:
+                continue
+            key = f"{Path(path).stem}:{i}"
+            zh = rng.random() < 0.3
+            names = {k: v[1] if zh else v[0] for k, v in VOCAL.items()}
+            q, y = choice(rng, names[r["answer"]], list(names.values()), VOCAL_ASK_ZH if zh else VOCAL_ASK, (2, 6))
+            yield split, key, r["audio"], {"state": STATE, "question": q, "label": y}
+            other = r["answer"] if rng.random() < 0.5 else rng.choice([k for k in VOCAL if k != r["answer"]])
+            q = {"type": "noul", "instructions": rng.choice(VOCAL_IS).format(VOCAL[other][0])}
+            yield split, key, r["audio"], {"state": STATE, "question": q, "label": int(other == r["answer"])}
+            if r["spk_id"][:1] in "fm" and rng.random() < 0.3:
+                labels = ["man", "woman"] if rng.random() < 0.5 else ["男性", "女性"]
+                q = {"type": "choice", "instructions": rng.choice(GENDER_ASK), "criteria": labels}
+                yield split, key, r["audio"], {"state": STATE, "question": q, "label": int(r["spk_id"][0] == "f")}
+
+
+GENRES_ZH = {
+    "blues": "蓝调", "classical": "古典", "country": "乡村", "disco": "迪斯科", "hiphop": "嘻哈",
+    "jazz": "爵士", "metal": "金属", "pop": "流行", "reggae": "雷鬼", "rock": "摇滚",
+}
+GENRE_ASK = ["What genre is this music?", "Which style of music is playing?", "What kind of music is this?"]
+GENRE_ASK_ZH = ["这段音乐是什么风格？", "这是哪种类型的音乐？"]
+GENRE_IS = ["Is this {} music?", "Does this sound like {}?"]
+
+
+def gtzan(src, rng):
+    """GTZAN genres from its tarball; the last 20 tracks of each genre are the test split."""
+    import tarfile
+
+    # Stream the tarball in its own order: a .tar.gz has no random access, so
+    # sorting members first would decompress from the start for every file.
+    with tarfile.open(Path(src) / "data" / "genres.tar.gz", mode="r|gz") as tar:
+        for member in tar:
+            m = re.search(r"(\w+)\.(\d{5})\.(wav|au)$", member.name)
+            if not member.isfile() or not m or m.group(1) not in GENRES_ZH:
+                continue
+            genre, index = m.group(1), int(m.group(2))
+            cell = {"bytes": tar.extractfile(member).read()}
+            split = "test" if index >= 80 else "train"
+            zh = rng.random() < 0.3
+            names = GENRES_ZH if zh else {g: "hip hop" if g == "hiphop" else g for g in GENRES_ZH}
+            q, y = choice(rng, names[genre], list(names.values()), GENRE_ASK_ZH if zh else GENRE_ASK, (2, 5))
+            yield split, member.name, cell, {"state": STATE, "question": q, "label": y}
+            other = genre if rng.random() < 0.5 else rng.choice([g for g in GENRES_ZH if g != genre])
+            q = {"type": "noul", "instructions": rng.choice(GENRE_IS).format("hip hop" if other == "hiphop" else other)}
+            yield split, member.name, cell, {"state": STATE, "question": q, "label": int(other == genre)}
+
+
+CONVERTERS = {"esc50": esc50, "cremad": cremad, "vocalsound": vocalsound, "gtzan": gtzan}
 
 
 def main():
@@ -124,12 +192,20 @@ def main():
     rng = random.Random(args.seed)
     out = Path(args.out)
     (out / args.name).mkdir(parents=True, exist_ok=True)
-    saved, counts = {}, Counter()
+    saved, counts, bad = {}, Counter(), set()
     with open(out / f"{args.name}.jsonl", "w") as f:
         for split, key, cell, row in CONVERTERS[args.name](args.src, rng):
+            if key in bad:
+                continue
             if key not in saved:  # one file per clip, however many questions ask about it
+                try:
+                    wav = decode(cell)
+                except Exception as e:  # e.g. GTZAN's corrupt jazz.00054.wav
+                    print(f"skipping undecodable clip {key}: {e}")
+                    bad.add(key)
+                    continue
                 path = out / args.name / f"{len(saved):06d}.wav"
-                sf.write(path, decode(cell), SR)
+                sf.write(path, wav, SR)
                 saved[key] = str(path.relative_to(out))
             row.update(audio=saved[key], split=split)
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
