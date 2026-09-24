@@ -1,0 +1,14 @@
+laya-omni
+Copyright 2026 laya-omni contributors
+
+This product includes software derived from Laya:
+https://github.com/NandhaKishorM/laya
+Copyright Convai Innovations and Laya contributors. Licensed under Apache-2.0.
+
+Prompt construction, calibration and the output schema are adapted from Laya,
+via laya-mlx (https://github.com/mizorewww/laya-mlx, Apache-2.0). The decision
+model follows Laya's DecisionModel and loads its checkpoints unchanged.
+
+Frozen feature encoders, downloaded separately and not included here:
+- SigLIP 2 (google/siglip2-base-patch16-256), Apache-2.0
+- Qwen3-ASR audio encoder (Qwen/Qwen3-ASR-0.6B), Apache-2.0
