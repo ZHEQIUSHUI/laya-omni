@@ -9,6 +9,8 @@ are a random subset around the answer, and noul questions are balanced.
     python scripts/convert_audio.py cremad datasets/CREMA-D --out data/audio
     python scripts/convert_audio.py vocalsound datasets/vocalsound --out data/audio
     python scripts/convert_audio.py gtzan datasets/gtzan --out data/audio
+    python scripts/convert_audio.py clotho datasets/Clotho --out data/audio
+    python scripts/convert_audio.py audiocaps datasets/audiocaps --out data/audio
 """
 
 import argparse
@@ -179,7 +181,118 @@ def gtzan(src, rng):
             yield split, member.name, cell, {"state": STATE, "question": q, "label": int(other == genre)}
 
 
-CONVERTERS = {"esc50": esc50, "cremad": cremad, "vocalsound": vocalsound, "gtzan": gtzan}
+MATCH_ASK = [
+    "Does this description match the sound?",
+    "Is this an accurate description of the audio?",
+    "Does the clip sound like this?",
+    "这段描述和声音对得上吗？",
+]
+PICK_ASK = ["Which description fits the sound best?", "What is happening in this audio?", "哪一条描述最符合这段声音？"]
+STOP = set("a an the and or of to in on at by for with from into onto is are was were be being been it its this that "
+           "there their then than while as some someone something people person sound sounds noise noises".split())
+
+
+def content_words(text):
+    return {w for w in re.findall(r"[a-z]+", text.lower()) if len(w) > 3 and w not in STOP}
+
+
+class CaptionPool:
+    """Captions of all clips in a split, for negatives: half random, half sharing a
+    content word with the true caption (water vs. rain), so matching needs listening."""
+
+    def __init__(self, captions_by_clip):
+        self.by_clip = captions_by_clip
+        self.clips = sorted(captions_by_clip)
+        self.by_word = {}
+        for clip, caps in captions_by_clip.items():
+            for c in caps:
+                for w in content_words(c):
+                    self.by_word.setdefault(w, []).append((clip, c))
+
+    def negative(self, clip, caption, rng):
+        if rng.random() < 0.5:
+            words = sorted(content_words(caption))
+            rng.shuffle(words)
+            for w in words:
+                others = [c for k, c in self.by_word.get(w, ()) if k != clip]
+                if others:
+                    return rng.choice(others)
+        other = clip
+        while other == clip:
+            other = rng.choice(self.clips)
+        return rng.choice(self.by_clip[other])
+
+
+def caption_questions(clip, caption, pool, rng):
+    """One match-or-not noul and one pick-the-description choice."""
+    text = caption if rng.random() < 0.5 else pool.negative(clip, caption, rng)
+    yield {"type": "noul", "instructions": f"{rng.choice(MATCH_ASK)} \"{text}\""}, int(text == caption)
+    options = [pool.negative(clip, caption, rng) for _ in range(rng.randint(1, 3))]
+    options = list(dict.fromkeys(o for o in options if o != caption)) + [caption]
+    if len(options) >= 2:
+        rng.shuffle(options)
+        yield {"type": "choice", "instructions": rng.choice(PICK_ASK), "criteria": options}, options.index(caption)
+
+
+def split_captions(text):
+    """Clotho stores a clip's five captions run together, sometimes without a full
+    stop between them: split at sentence ends and at a lowercase-to-Capital join."""
+    parts = re.split(r"(?<=[.!?])\s+|(?<=[a-z])\s+(?=[A-Z])", text.strip())
+    return [p.strip().rstrip(".") for p in parts if len(p.split()) >= 4]
+
+
+def clotho(src, rng):
+    """Clotho captions; its development and validation sets train, evaluation tests."""
+    splits = {"train": "train", "valid": "train", "test": "test"}
+    meta = {}
+    for d, split in splits.items():
+        for path in sorted(glob.glob(str(Path(src) / "data" / d / "*.parquet"))):
+            for r in pq.read_table(path, columns=["index", "text"]).to_pylist():
+                caps = split_captions(r["text"])
+                if caps:
+                    meta[r["index"]] = (split, caps)
+    pools = {s: CaptionPool({k: c for k, (sp, c) in meta.items() if sp == s}) for s in ("train", "test")}
+    for d, split in splits.items():
+        for path in sorted(glob.glob(str(Path(src) / "data" / d / "*.parquet"))):
+            for r in pq.read_table(path, columns=["index", "audio"]).to_pylist():
+                if r["index"] not in meta:
+                    continue
+                caps = meta[r["index"]][1]
+                for caption in rng.sample(caps, min(2, len(caps))):
+                    for q, y in caption_questions(r["index"], caption, pools[split], rng):
+                        yield split, r["index"], r["audio"], {"state": STATE, "question": q, "label": y}
+
+
+def audiocaps(src, rng):
+    """AudioCaps; train and validation clips train, test clips test."""
+    files = {"train": "train", "validation": "train", "test": "test"}
+    meta = {}
+    for prefix, split in files.items():
+        for path in sorted(glob.glob(str(Path(src) / "data" / f"{prefix}-*.parquet"))):
+            for r in pq.read_table(path, columns=["youtube_id", "caption"]).to_pylist():
+                meta.setdefault(r["youtube_id"], (split, []))[1].append(r["caption"].strip().rstrip("."))
+    pools = {s: CaptionPool({k: c for k, (sp, c) in meta.items() if sp == s}) for s in ("train", "test")}
+    seen = set()
+    for prefix, split in files.items():
+        for path in sorted(glob.glob(str(Path(src) / "data" / f"{prefix}-*.parquet"))):
+            for r in pq.read_table(path, columns=["youtube_id", "audio"]).to_pylist():
+                clip = r["youtube_id"]
+                if clip in seen:  # val/test clips repeat once per caption; ask about each clip once
+                    continue
+                seen.add(clip)
+                caption = rng.choice(meta[clip][1])
+                for q, y in caption_questions(clip, caption, pools[split], rng):
+                    yield split, clip, r["audio"], {"state": STATE, "question": q, "label": y}
+
+
+CONVERTERS = {
+    "esc50": esc50,
+    "cremad": cremad,
+    "vocalsound": vocalsound,
+    "gtzan": gtzan,
+    "clotho": clotho,
+    "audiocaps": audiocaps,
+}
 
 
 def main():
