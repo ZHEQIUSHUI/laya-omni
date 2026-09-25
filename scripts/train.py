@@ -143,6 +143,7 @@ def main():
     ap.add_argument("--image-encoder", default="", help="SigLIP checkpoint for --raw-images")
     ap.add_argument("--image-tokens", default="64", help="token counts per image, drawn per batch (e.g. 64,256)")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--image-grid", type=int, default=16, help="2-D position grid for image tokens (0: frame indices)")
     ap.add_argument("--games", default="", help="data_dir:game1,game2 (trained on)")
     ap.add_argument("--holdout-games", default="", help="games evaluated zero-shot, never trained on")
     ap.add_argument("--jsonl", action="append", default=[], help="converted dataset (repeatable)")
@@ -185,7 +186,7 @@ def main():
 
         image_encoder = ImageEncoder(args.image_encoder, device=args.device, pool=1)
         in_dims["image"] = image_encoder.dims
-    grid = 16 if args.raw_images else 0  # SigLIP base/16 at 256 px: a 16 x 16 patch grid
+    grid = args.image_grid if args.raw_images else 0  # SigLIP base/16 at 256 px: a 16 x 16 patch grid
     model.fusion = OmniFusion(model.encoder.config.hidden_size, in_dims, lora_rank=args.lora, image_grid=grid).to(args.device)
     for name, p in model.named_parameters():
         p.requires_grad_(name.startswith("fusion."))
