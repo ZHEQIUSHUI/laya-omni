@@ -1,6 +1,6 @@
 """Web demo: ask Laya typed questions about an uploaded image and/or audio clip.
 
-    laya-omni serve --fusion runs/formal-v1-stage2 --laya models/laya-multilingual \\
+    laya-omni serve --fusion runs/formal-v2 --laya models/laya-multilingual \\
         --image-encoder models/siglip2-base-patch16-256 \\
         --audio-encoder models/qwen3-asr-0.6b-audio-encoder --examples data --port 8030
 """

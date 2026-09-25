@@ -39,7 +39,7 @@ each row can ask its own question), or a laya-omni jsonl (see the end).
 ```bash
 python scripts/finetune.py \
     --folders my_task/ --question "Is the part defective?" \
-    --base runs/formal-v1-stage2 --laya models/laya-multilingual \
+    --base runs/formal-v2 --laya models/laya-multilingual \
     --image-encoder models/siglip2-base-patch16-256 \
     --audio-encoder models/qwen3-asr-0.6b-audio-encoder \
     --out runs/my-task
@@ -91,7 +91,7 @@ work (better with replay).
 Snake frames from a game that was never in general training (4 options,
 chance 0.25), same settings, best test accuracy:
 
-| Training frames | from the general fusion | from scratch |
+| Training frames | from the general fusion (formal-v1) | from scratch |
 |---:|---:|---:|
 | 100 | 0.36 | 0.38 |
 | 500 | **0.55** | 0.35 |

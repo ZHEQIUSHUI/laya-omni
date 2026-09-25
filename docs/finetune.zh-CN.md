@@ -35,7 +35,7 @@ my_task/
 ```bash
 python scripts/finetune.py \
     --folders my_task/ --question "这个零件有缺陷吗？" \
-    --base runs/formal-v1-stage2 --laya models/laya-multilingual \
+    --base runs/formal-v2 --laya models/laya-multilingual \
     --image-encoder models/siglip2-base-patch16-256 \
     --audio-encoder models/qwen3-asr-0.6b-audio-encoder \
     --out runs/my-task
@@ -80,7 +80,7 @@ omni.predict("Image.", {"defect": {"type": "noul", "instructions": "这个零件
 
 在通用训练里从没出现过的贪吃蛇游戏画面上（4 选 1，随机猜 0.25），同样设置下的最佳测试准确率：
 
-| 训练样本 | 从通用模型出发 | 从零开始 |
+| 训练样本 | 从通用模型出发（formal-v1） | 从零开始 |
 |---:|---:|---:|
 | 100 | 0.36 | 0.38 |
 | 500 | **0.55** | 0.35 |

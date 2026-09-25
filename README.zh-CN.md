@@ -11,19 +11,20 @@ laya-omni 让状态里还可以带上图片、音频，或者两者都有；除�
 
 ## 能做什么
 
-`formal-v1` 在从未训练过的测试题上的准确率，对照的是同样的题目交给不看图、不听音的原版 Laya：
+`formal-v2` 在从未训练过的测试题上的准确率，对照的是同样的题目交给不看图、不听音的原版 Laya：
 
 | | 原版 Laya（只看文字） | laya-omni |
 |---|---:|---:|
-| 照片问答（VQAv2 / GQA） | 0.45 / 0.55 | **0.77 / 0.77** |
-| 读图中文字（TextVQA / OCR-VQA） | 0.36 / 0.44 | **0.81 / 0.90** |
-| 图表与文档（ChartQA / DocVQA） | 0.36 / 0.40 | **0.80 / 0.71** |
+| 照片问答（VQAv2 / GQA） | 0.45 / 0.55 | **0.78 / 0.78** |
+| 读图中文字（TextVQA / OCR-VQA） | 0.36 / 0.44 | **0.82 / 0.89** |
+| 图表与文档（ChartQA / DocVQA） | 0.36 / 0.40 | **0.82 / 0.72** |
+| 科学图示（ScienceQA / AI2D） | 0.41 / 0.25 | **0.80 / 0.62** |
 | 计数（TallyQA） | 0.26 | **0.88** |
 | 声音事件（ESC-50 / VGGSound） | 0.43 / 0.43 | **0.96 / 0.84** |
-| 语音意图（SLURP 101 种 / MINDS-14 含中文等 14 种语言） | 0.34 / 0.41 | **0.95 / 0.96** |
+| 语音意图（SLURP 101 种 / MINDS-14 含中文等 14 种语言） | 0.34 / 0.41 | **0.96 / 0.95** |
 | 音频描述匹配（AudioCaps） | 0.46 | **0.91** |
-| 图像 + 音频同时输入（OmniInstruct） | 0.46 | **0.84** |
-| 零样本：Mini-ImageNet / MMAU / Song Describer | 0.52 / 0.29 / 0.46 | **0.80 / 0.44 / 0.70** |
+| 图像 + 音频同时输入（OmniInstruct） | 0.46 | **0.85** |
+| 零样本：Mini-ImageNet / MMAU / Song Describer | 0.52 / 0.29 / 0.46 | **0.79 / 0.45 / 0.68** |
 
 完整结果、温度校准、少样本适配，以及试过但行不通的方案：[docs/results.md](docs/results.md)。
 
@@ -45,7 +46,7 @@ laya-omni 让状态里还可以带上图片、音频，或者两者都有；除�
 from laya_omni import Omni
 
 omni = Omni.load(
-    "runs/formal-v1-stage2", laya="models/laya-multilingual",
+    "runs/formal-v2", laya="models/laya-multilingual",
     image_encoder="models/siglip2-base-patch16-256",
     audio_encoder="models/qwen3-asr-0.6b-audio-encoder",
 )
@@ -70,7 +71,7 @@ omni.predict(state, questions)   # 不给图像和音频：就是原版 Laya
 
 ```bash
 pip install -e '.[web]'
-laya-omni serve --fusion runs/formal-v1-stage2 --laya models/laya-multilingual \
+laya-omni serve --fusion runs/formal-v2 --laya models/laya-multilingual \
     --image-encoder models/siglip2-base-patch16-256 \
     --audio-encoder models/qwen3-asr-0.6b-audio-encoder --examples data --port 8030
 ```
@@ -83,7 +84,7 @@ laya-omni serve --fusion runs/formal-v1-stage2 --laya models/laya-multilingual \
 
 ```bash
 python scripts/finetune.py --folders my_task/ --question "这个零件有缺陷吗？" \
-    --base runs/formal-v1-stage2 --laya models/laya-multilingual \
+    --base runs/formal-v2 --laya models/laya-multilingual \
     --image-encoder models/siglip2-base-patch16-256 --out runs/my-task
 ```
 

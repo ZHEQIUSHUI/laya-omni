@@ -2,7 +2,7 @@
 
     from laya_omni import Omni
 
-    omni = Omni.load("runs/formal-v1-stage2", laya="models/laya-multilingual",
+    omni = Omni.load("runs/formal-v2", laya="models/laya-multilingual",
                      image_encoder="models/siglip2-base-patch16-256",
                      audio_encoder="models/qwen3-asr-0.6b-audio-encoder")
     omni.predict("Image.", {"animal": {"type": "choice", "instructions": "Which animal is this?",
