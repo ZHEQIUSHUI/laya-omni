@@ -100,20 +100,31 @@ class JsonlSource:
         """stores: {"image": store_name, "audio": store_name} for the keys rows may carry."""
         self.name = name or Path(path).stem
         self.shuffle_options = shuffle_options
-        self.rows = []
+        self.rows, self.missing = [], 0
         for line in open(path):
             r = json.loads(line)
             if r.get("split", "train") != split:
                 continue
-            feats = {}
-            for m, s in stores.items():
-                # A "raw:<dir>" store means the file is read and encoded at training time.
-                look = (lambda x, s=s: (s, x)) if s.startswith(RAW) else (lambda x, s=s: (s, store.row(s, x)))
-                if r.get(m):
-                    feats[m] = look(r[m])
-                elif r.get(m + "s"):  # several images ("images": [...]) or clips
-                    feats[m] = [look(x) for x in r[m + "s"]]
+            try:
+                feats = self._features(r, store, stores)
+            except KeyError:  # its image or clip could not be encoded when caching
+                self.missing += 1
+                continue
             self.rows.append({"state": r.get("state", ""), "question": r["question"], "label": r["label"], "features": feats, "source": self.name})
+        if self.missing:
+            print(f"{self.name} ({split}): {self.missing} rows skipped, their media are missing from the cache")
+
+    @staticmethod
+    def _features(r, store, stores):
+        feats = {}
+        for m, s in stores.items():
+            # A "raw:<dir>" store means the file is read and encoded at training time.
+            look = (lambda x, s=s: (s, x)) if s.startswith(RAW) else (lambda x, s=s: (s, store.row(s, x)))
+            if r.get(m):
+                feats[m] = look(r[m])
+            elif r.get(m + "s"):  # several images ("images": [...]) or clips
+                feats[m] = [look(x) for x in r[m + "s"]]
+        return feats
 
     def samples(self, rng):
         if not self.shuffle_options:

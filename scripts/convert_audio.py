@@ -601,6 +601,8 @@ def main():
             if key not in saved:  # one file per clip, however many questions ask about it
                 try:
                     wav = decode(cell)
+                    if len(wav) < SR // 10:  # empty or near-empty source audio
+                        raise ValueError(f"only {len(wav)} samples")
                     limit = MAX_SECONDS.get(args.name, 0) * SR
                     if limit and len(wav) > limit:  # keep the middle
                         start = (len(wav) - limit) // 2

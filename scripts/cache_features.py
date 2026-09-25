@@ -25,10 +25,19 @@ from laya_omni.encoders import AudioEncoder, image_encoder, load_audio
 def cache_spans(args, paths, enc, load):
     """Variable-length features (audio, native-resolution images): frames concatenated,
     with a [start, end) span per file."""
-    chunks, spans, start = [], {}, 0
+    chunks, spans, start, bad = [], {}, 0, []
     for i in range(0, len(paths), args.batch):
-        chunk = paths[i : i + args.batch]
-        for p, h in zip(chunk, enc([load(Path(args.root) / p) for p in chunk])):
+        chunk, loaded = [], []
+        for p in paths[i : i + args.batch]:
+            try:  # an unreadable file is left out of the index; rows using it are skipped in training
+                loaded.append(load(Path(args.root) / p))
+                chunk.append(p)
+            except Exception as e:
+                bad.append(p)
+                print(f"\nskipping {p}: {e}")
+        if not chunk:
+            continue
+        for p, h in zip(chunk, enc(loaded)):
             chunks.append(h.float().cpu().numpy().astype(np.float16))
             spans[p] = [start, start + h.shape[0]]
             start += h.shape[0]
@@ -38,7 +47,7 @@ def cache_spans(args, paths, enc, load):
     np.save(out.with_suffix(".npy"), feats)
     meta = {"encoder": args.encoder, "shape": list(feats.shape), "spans": spans}
     out.with_suffix(".json").write_text(json.dumps(meta))
-    print(f"\n{out.with_suffix('.npy')} {feats.shape}, {len(paths)} files")
+    print(f"\n{out.with_suffix('.npy')} {feats.shape}, {len(spans)} files ({len(bad)} unreadable, skipped)")
 
 
 def main():
