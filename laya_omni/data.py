@@ -231,14 +231,26 @@ def pool_tokens(h, tokens):
     return F.avg_pool2d(grid, side // target).flatten(2).transpose(1, 2)
 
 
-def mix(sources, rng, cap=None):
-    """One epoch: every source's samples (at most `cap` each), shuffled together."""
+def mix(sources, rng, cap=None, weights=None):
+    """One epoch: every source's samples (at most `cap` each), shuffled together.
+
+    weights: {source name: factor}. A factor above 1 draws the source several times
+    (each draw reshuffles its options), below 1 draws a fraction; the cap scales
+    with the factor.
+    """
     out = []
     for src in sources:
-        s = src.samples(rng)
-        if cap and len(s) > cap:
-            s = rng.sample(s, cap)
-        out.extend(s)
+        w = (weights or {}).get(src.name, 1.0)
+        limit = int(cap * w) if cap else None
+        drawn = []
+        for _ in range(max(1, int(w + 0.999))):
+            drawn += src.samples(rng)
+        want = int(len(drawn) / max(1, int(w + 0.999)) * w)
+        if limit is not None:
+            want = min(want, limit)
+        if want < len(drawn):
+            drawn = rng.sample(drawn, want)
+        out.extend(drawn)
     rng.shuffle(out)
     return out
 

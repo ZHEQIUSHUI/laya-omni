@@ -149,6 +149,7 @@ def main():
     ap.add_argument("--jsonl", action="append", default=[], help="converted dataset (repeatable)")
     ap.add_argument("--holdout-jsonl", action="append", default=[], help="dataset evaluated zero-shot, never trained on")
     ap.add_argument("--cap", type=int, default=0, help="max samples per source per epoch")
+    ap.add_argument("--weight", action="append", default=[], help="source=factor: draw a source more (or less) often")
     ap.add_argument("--eval-limit", type=int, default=2000, help="test samples per source")
     ap.add_argument("--probe-every", type=int, default=0, help="quick evaluation every N optimizer steps (0: off)")
     ap.add_argument("--probe-limit", type=int, default=200, help="test samples per source for the quick evaluation")
@@ -166,6 +167,7 @@ def main():
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
     args.tokens = [int(t) for t in args.image_tokens.split(",")]
+    args.weights = {k: float(v) for k, v in (w.split("=", 1) for w in args.weight)}
 
     world, rank = int(os.environ.get("WORLD_SIZE", 1)), int(os.environ.get("RANK", 0))
     if world > 1:
@@ -212,7 +214,7 @@ def main():
         print("train", {s.name: len(s.rows) for s in train}, "test", {s.name: len(s.rows) for s in test})
     main_rank and print(f"trainable {sum(p.numel() for p in params) / 1e6:.2f}M, of which LoRA {sum(p.numel() for n, p in model.named_parameters() if 'fusion.lora.' in n) / 1e6:.2f}M")
 
-    per_epoch = len(mix(train, seeded(0), args.cap or None))
+    per_epoch = len(mix(train, seeded(0), args.cap or None, args.weights))
     steps = args.epochs * math.ceil(per_epoch / (args.batch * args.accum * world))
     warm = max(1, min(args.warmup, steps // 10))
     lora = [p for n, p in model.named_parameters() if p.requires_grad and n.startswith("fusion.lora.")]
@@ -249,7 +251,7 @@ def main():
     step, micro, t0, state = 0, 0, time.time(), {"best": float("inf")}
     for epoch in range(args.epochs):
         model.eval()  # frozen parts keep dropout off; the fusion has no dropout
-        samples = mix(train, rng, args.cap or None)
+        samples = mix(train, rng, args.cap or None, args.weights)
         per_rank = len(samples) // (args.batch * world) * args.batch  # equal batch counts on every rank
         mine = [x for i in range(0, per_rank * world, args.batch) if (i // args.batch) % world == rank
                 for x in samples[i : i + args.batch]]

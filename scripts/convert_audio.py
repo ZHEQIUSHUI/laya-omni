@@ -564,7 +564,39 @@ def avqa(src, rng):
                 yield split, key, r["audio"], {"state": STATE, "question": q, "label": options.index(answer)}
 
 
+HEAR_IS = ["Can you hear {} in this clip?", "Is there {} in the recording?", "录音里有{}吗？"]
+HEAR_WHICH = ["Which of these can be heard in the clip?", "Which sound is present in the recording?", "录音里出现了下面哪种声音？"]
+
+
+def fsd50k(src, rng):
+    """FSD50K's 200 AudioSet classes, multi-label with ancestors included, so any class
+    outside a clip's labels is truly absent. The most specific label is asked about most
+    often. Dev (train + val) trains, eval tests."""
+    import csv
+
+    src = Path(src)
+    vocab = sorted({l for f in ("dev.csv", "eval.csv") for r in csv.DictReader(open(src / "labels" / f)) for l in r["labels"].split(",")})
+    name = lambda l: l.replace("_and_", " and ").replace("_", " ").lower()
+    for csv_name, folder, split in (("dev.csv", "dev", "train"), ("eval.csv", "eval", "test")):
+        for r in csv.DictReader(open(src / "labels" / csv_name)):
+            labels = r["labels"].split(",")
+            path = src / "clips" / folder / f"{r['fname']}.wav"
+            if not path.exists():
+                continue
+            cell = {"bytes": path.read_bytes()}
+            present = labels[0] if rng.random() < 0.7 else rng.choice(labels)  # labels[0] is the most specific
+            absent = [l for l in vocab if l not in labels]
+            options = [name(l) for l in rng.sample(absent, 3)] + [name(present)]
+            rng.shuffle(options)
+            q = {"type": "choice", "instructions": rng.choice(HEAR_WHICH), "criteria": options}
+            yield split, r["fname"], cell, {"state": STATE, "question": q, "label": options.index(name(present))}
+            ask = present if rng.random() < 0.5 else rng.choice(absent)
+            q = {"type": "noul", "instructions": rng.choice(HEAR_IS).format(name(ask))}
+            yield split, r["fname"], cell, {"state": STATE, "question": q, "label": int(ask in labels)}
+
+
 CONVERTERS = {
+    "fsd50k": fsd50k,
     "avqa": avqa,
     "songdescriber": songdescriber,
     "mmau": mmau,
