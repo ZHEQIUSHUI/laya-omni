@@ -10,6 +10,11 @@ image encoder runs on the GPU each step, so no feature cache is needed and each
 batch can use a different token count (--image-tokens 64,256). Audio always
 comes from cached features (--audio-features).
 
+Several GPUs: `torchrun --nproc_per_node 2 scripts/train.py ...`. Every rank draws
+the same epoch order and takes every world-size-th batch; the fusion's gradients
+(the only trainable parameters) are averaged before each optimizer step. Rank 0
+evaluates, logs and saves.
+
     python scripts/train.py --laya models/laya-multilingual --raw-images \\
         --image-encoder models/siglip2-base-patch16-256 --image-tokens 64,256 \\
         --audio-features cache/qwen3-asr --jsonl data/cauldron/vqav2.jsonl \\
@@ -17,6 +22,7 @@ comes from cached features (--audio-features).
 """
 
 import argparse
+import datetime
 import json
 import math
 import os
@@ -24,6 +30,7 @@ import time
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from safetensors.torch import save_file
 
@@ -155,8 +162,16 @@ def main():
     args = ap.parse_args()
     args.tokens = [int(t) for t in args.image_tokens.split(",")]
 
+    world, rank = int(os.environ.get("WORLD_SIZE", 1)), int(os.environ.get("RANK", 0))
+    if world > 1:
+        # Rank 0 evaluates between epochs while the others wait: allow a long wait.
+        dist.init_process_group("nccl", timeout=datetime.timedelta(hours=2))
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+        args.device = f"cuda:{int(os.environ['LOCAL_RANK'])}"
+    main_rank = rank == 0
     torch.manual_seed(args.seed)
-    rng = seeded(args.seed)
+    rng = seeded(args.seed)  # identical on every rank: same epoch order
+    token_rng = seeded(args.seed + 1000 + rank)  # per rank: token counts differ between ranks
     agent = Agent(args.laya, device=args.device)
     model = agent.model
     store = FeatureStore()
@@ -175,11 +190,12 @@ def main():
     for name, p in model.named_parameters():
         p.requires_grad_(name.startswith("fusion."))
     params = [p for p in model.parameters() if p.requires_grad]
-    print("train", {s.name: len(s.rows) for s in train}, "test", {s.name: len(s.rows) for s in test})
-    print(f"trainable {sum(p.numel() for p in params) / 1e6:.2f}M, of which LoRA {sum(p.numel() for n, p in model.named_parameters() if 'fusion.lora.' in n) / 1e6:.2f}M")
+    if main_rank:
+        print("train", {s.name: len(s.rows) for s in train}, "test", {s.name: len(s.rows) for s in test})
+    main_rank and print(f"trainable {sum(p.numel() for p in params) / 1e6:.2f}M, of which LoRA {sum(p.numel() for n, p in model.named_parameters() if 'fusion.lora.' in n) / 1e6:.2f}M")
 
     per_epoch = len(mix(train, seeded(0), args.cap or None))
-    steps = args.epochs * math.ceil(per_epoch / (args.batch * args.accum))
+    steps = args.epochs * math.ceil(per_epoch / (args.batch * args.accum * world))
     warm = max(1, min(300, steps // 10))
     lora = [p for n, p in model.named_parameters() if p.requires_grad and n.startswith("fusion.lora.")]
     rest = [p for n, p in model.named_parameters() if p.requires_grad and not n.startswith("fusion.lora.")]
@@ -190,7 +206,8 @@ def main():
     )
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "args.json").write_text(json.dumps(vars(args), indent=2) + "\n")
+    if main_rank:
+        (out / "args.json").write_text(json.dumps({**vars(args), "world": world}, indent=2) + "\n")
     config = {
         "in_dims": in_dims,
         "max_items": model.fusion.max_items,
@@ -203,15 +220,23 @@ def main():
         "lora_layers": model.fusion.lora_layers,
         "laya": str(args.laya),
     }
-    (out / "fusion_config.json").write_text(json.dumps(config, indent=2) + "\n")
-    log = open(out / "log.jsonl", "a")
-    base = evaluate_all(agent, store, test, args, image_encoder)
-    print(json.dumps({"epoch": -1, **base}, ensure_ascii=False), flush=True)
-    step, micro, t0, best = 0, 0, time.time(), float("inf")
+    log = None
+    if main_rank:
+        (out / "fusion_config.json").write_text(json.dumps(config, indent=2) + "\n")
+        log = open(out / "log.jsonl", "a")
+        base = evaluate_all(agent, store, test, args, image_encoder)
+        print(json.dumps({"epoch": -1, **base}, ensure_ascii=False), flush=True)
+    if world > 1:
+        dist.barrier()
+    step, micro, t0, state = 0, 0, time.time(), {"best": float("inf")}
     for epoch in range(args.epochs):
         model.eval()  # frozen parts keep dropout off; the fusion has no dropout
-        for cpu in loader(agent, store, mix(train, rng, args.cap or None), args.batch, args.workers):
-            b, mods, y = to_device(*cpu, args.device, image_encoder, rng.choice(args.tokens))
+        samples = mix(train, rng, args.cap or None)
+        per_rank = len(samples) // (args.batch * world) * args.batch  # equal batch counts on every rank
+        mine = [x for i in range(0, per_rank * world, args.batch) if (i // args.batch) % world == rank
+                for x in samples[i : i + args.batch]]
+        for cpu in loader(agent, store, mine, args.batch, args.workers):
+            b, mods, y = to_device(*cpu, args.device, image_encoder, token_rng.choice(args.tokens))
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 logits, _ = model(**b, modalities=mods)
             loss = F.cross_entropy(logits.float(), y)
@@ -219,25 +244,44 @@ def main():
             micro += 1
             if micro % args.accum:
                 continue
+            if world > 1:  # average the fusion's gradients in one call; unused ones count as zero
+                grads = [p.grad if p.grad is not None else torch.zeros_like(p) for p in params]
+                flat = torch.cat([g.flatten() for g in grads])
+                dist.all_reduce(flat, op=dist.ReduceOp.AVG)
+                for p, g in zip(params, flat.split([g.numel() for g in grads])):
+                    p.grad = g.view_as(p)
             torch.nn.utils.clip_grad_norm_(params, 1.0)
             opt.step()
             opt.zero_grad(set_to_none=True)
             sched.step()
             step += 1
-            if step % 100 == 0:
+            if step % 100 == 0 and main_rank:
                 print(f"ep {epoch} step {step}/{steps} loss {loss.item():.4f} {time.time() - t0:.0f}s", flush=True)
-        metrics = evaluate_all(agent, store, test, args, image_encoder)
-        print(json.dumps({"epoch": epoch, **metrics}, ensure_ascii=False), flush=True)
-        log.write(json.dumps({"epoch": epoch, "step": step, "metrics": metrics}) + "\n")
-        log.flush()
-        # Keep the epoch with the best mean test NLL: on small data accuracy plateaus
-        # while the probabilities keep getting more overconfident.
-        score = sum(v["with"]["nll"] for v in metrics.values()) / len(metrics)
-        if score < best:
-            best = score
-            save_file({k: v.detach().cpu().contiguous() for k, v in model.fusion.state_dict().items()}, out / "fusion.safetensors")
-            (out / "best.json").write_text(json.dumps({"epoch": epoch, "mean_nll": score, "metrics": metrics}, indent=1) + "\n")
-    print("saved", out)
+        if world > 1:
+            dist.barrier()
+        if main_rank:
+            end_of_epoch(agent, store, test, args, image_encoder, model, epoch, step, log, out, state)
+        if world > 1:
+            dist.barrier()
+    if world > 1:
+        dist.destroy_process_group()
+    if main_rank:
+        print("saved", out)
+
+
+def end_of_epoch(agent, store, test, args, image_encoder, model, epoch, step, log, out, state):
+    """Evaluate, log, and keep the fusion of the epoch with the best mean test NLL."""
+    metrics = evaluate_all(agent, store, test, args, image_encoder)
+    print(json.dumps({"epoch": epoch, **metrics}, ensure_ascii=False), flush=True)
+    log.write(json.dumps({"epoch": epoch, "step": step, "metrics": metrics}) + "\n")
+    log.flush()
+    # Keep the epoch with the best mean test NLL: on small data accuracy plateaus
+    # while the probabilities keep getting more overconfident.
+    score = sum(v["with"]["nll"] for v in metrics.values()) / len(metrics)
+    if score < state["best"]:
+        state["best"] = score
+        save_file({k: v.detach().cpu().contiguous() for k, v in model.fusion.state_dict().items()}, out / "fusion.safetensors")
+        (out / "best.json").write_text(json.dumps({"epoch": epoch, "mean_nll": score, "metrics": metrics}, indent=1) + "\n")
 
 
 if __name__ == "__main__":
