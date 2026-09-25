@@ -7,7 +7,7 @@
 laya-omni 让状态里还可以带上图片、音频，或者两者都有；除此之外 Laya 的一切保持不变：
 同样的问题格式、同样的输出，不给图像和音频时，结果与原版 Laya 逐位一致。
 
-[English](README.md) · [架构](docs/architecture.md) · [完整结果](docs/results.md) · [复现](docs/training.md)
+[English](README.md) · [架构](docs/architecture.md) · [完整结果](docs/results.md) · [场景微调](docs/finetune.zh-CN.md) · [复现](docs/training.md)
 
 ## 能做什么
 
@@ -76,6 +76,18 @@ laya-omni serve --fusion runs/formal-v1-stage2 --laya models/laya-multilingual \
 ```
 
 可以上传图片或音频（也可以用麦克风录音）、自己写问题，并对比「看图听音后」和「不看不听」的概率。
+
+## 迁移到你的场景
+
+每个答案放一个文件夹，一条命令即可：从通用模型出发训练，自动早停和校准，几百个样本几分钟完成。
+
+```bash
+python scripts/finetune.py --folders my_task/ --question "这个零件有缺陷吗？" \
+    --base runs/formal-v1-stage2 --laya models/laya-multilingual \
+    --image-encoder models/siglip2-base-patch16-256 --out runs/my-task
+```
+
+教程与实测结果：[docs/finetune.zh-CN.md](docs/finetune.zh-CN.md)。
 
 ## 原理
 

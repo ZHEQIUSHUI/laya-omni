@@ -27,7 +27,7 @@ import torch
 
 from laya_omni.agent import Agent, TEMP_MAX, TEMP_MIN
 from laya_omni.common import temp_bucket
-from laya_omni.data import RAW, Batches, FeatureStore, JsonlSource, seeded, to_device
+from laya_omni.data import RAW, Batches, FeatureStore, JsonlSource, feature_prefix, to_device
 from laya_omni.encoders import ImageEncoder
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -43,7 +43,7 @@ def load_rows(paths, holdout, store, audio_features, limit):
         if first.get("audio") or first.get("audios"):
             name = f"audio:{Path(path).stem}"
             if name not in store.arrays:
-                store.add(name, Path(audio_features) / Path(path).stem)
+                store.add(name, feature_prefix(audio_features, Path(path).stem))
             stores["audio"] = name
         splits = ("train", "test") if all_rows else ("test",)
         rows = [r for s in splits for r in JsonlSource(path, s, store, stores, shuffle_options=False).rows]
@@ -99,7 +99,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--laya", required=True)
     ap.add_argument("--fusion", required=True, help="training run directory")
-    ap.add_argument("--image-encoder", required=True)
+    ap.add_argument("--image-encoder", default="", help="needed when any set has images")
     ap.add_argument("--audio-features", default="")
     ap.add_argument("--jsonl", action="append", default=[], help="dataset: its test rows are evaluated")
     ap.add_argument("--holdout", action="append", default=[], help="dataset never trained on: all rows")
@@ -112,7 +112,7 @@ def main():
     args = ap.parse_args()
 
     agent = Agent(args.laya, args.fusion, device=args.device)
-    encoder = ImageEncoder(args.image_encoder, device=args.device, pool=1)
+    encoder = ImageEncoder(args.image_encoder, device=args.device, pool=1) if args.image_encoder else None
     store = FeatureStore()
     report, calib = {}, defaultdict(lambda: ([], []))
     held_out = {Path(p).stem for p in args.holdout}

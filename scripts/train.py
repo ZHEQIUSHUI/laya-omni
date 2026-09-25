@@ -35,7 +35,7 @@ import torch.nn.functional as F
 from safetensors.torch import save_file
 
 from laya_omni.agent import Agent
-from laya_omni.data import RAW, Batches, FeatureStore, GameSource, JsonlSource, mix, seeded, to_device
+from laya_omni.data import RAW, Batches, FeatureStore, GameSource, JsonlSource, feature_prefix, mix, seeded, to_device
 from laya_omni.model import OmniFusion
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")  # workers fork after the tokenizer is used
@@ -69,7 +69,7 @@ def build_sources(args, store, split):
                 continue
             name = f"{modality}:{Path(path).stem}"
             if name not in store.arrays:
-                store.add(name, Path(root) / Path(path).stem)
+                store.add(name, feature_prefix(root, Path(path).stem))
             stores[modality] = name
         if held_out:  # never trained on: every row is a test row
             parts = [JsonlSource(path, s, store, stores, shuffle_options=False) for s in ("train", "test")]
@@ -138,7 +138,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--laya", required=True)
     ap.add_argument("--features", default="", help="directory of cached image features, one prefix per dataset")
-    ap.add_argument("--audio-features", default="", help="directory of cached audio features, one prefix per dataset")
+    ap.add_argument("--audio-features", default="", help="directories (':'-separated) of cached audio features, one prefix per dataset")
     ap.add_argument("--raw-images", action="store_true", help="read and encode image files during training")
     ap.add_argument("--image-encoder", default="", help="SigLIP checkpoint for --raw-images")
     ap.add_argument("--image-tokens", default="64", help="token counts per image, drawn per batch (e.g. 64,256)")

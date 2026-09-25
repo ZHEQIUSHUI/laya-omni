@@ -9,7 +9,7 @@ images, audio clips, or both, and keeps everything else about Laya: the same
 questions, the same output, and, with no image or audio, the same numbers bit
 for bit.
 
-[中文说明](README.zh-CN.md) · [Architecture](docs/architecture.md) · [Results](docs/results.md) · [Reproducing](docs/training.md)
+[中文说明](README.zh-CN.md) · [Architecture](docs/architecture.md) · [Results](docs/results.md) · [Fine-tuning](docs/finetune.md) · [Reproducing](docs/training.md)
 
 ## What it can do
 
@@ -83,6 +83,20 @@ laya-omni serve --fusion runs/formal-v1-stage2 --laya models/laya-multilingual \
 
 Upload images or audio (or record from the microphone), write questions, and
 compare the answer with and without the image or audio.
+
+## Adapt to your scenario
+
+Put examples in one folder per answer and run one command; it trains from the
+general fusion with early stopping and calibration, in minutes for a few
+hundred examples:
+
+```bash
+python scripts/finetune.py --folders my_task/ --question "Is the part defective?" \
+    --base runs/formal-v1-stage2 --laya models/laya-multilingual \
+    --image-encoder models/siglip2-base-patch16-256 --out runs/my-task
+```
+
+Tutorial and results: [docs/finetune.md](docs/finetune.md).
 
 ## How it works
 

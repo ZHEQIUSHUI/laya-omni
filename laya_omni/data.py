@@ -49,6 +49,15 @@ class FeatureStore:
         return self.arrays[name][row]
 
 
+def feature_prefix(roots, stem):
+    """The first of the ':'-separated feature directories that holds <stem>.npy."""
+    dirs = [r for r in str(roots).split(":") if r]
+    for d in dirs:
+        if (Path(d) / f"{stem}.npy").exists():
+            return Path(d) / stem
+    return Path(dirs[0] if dirs else ".") / stem
+
+
 def shuffled(question, label, rng):
     """Shuffle a choice question's options, returning the question and remapped label."""
     if question["type"] != "choice":

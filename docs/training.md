@@ -102,15 +102,6 @@ The temperatures go into the run's `fusion_config.json`.
 
 ## 6. Adapting to a new task
 
-Start from the formal fusion with `--init`, few epochs, and keep the best
-epoch (by NLL); see the few-shot table in [results](results.md#games-zero-shot-and-few-shot).
-
-```bash
-python scripts/train.py --laya $W/models/laya-multilingual --raw-images \
-    --image-encoder $W/models/siglip2-base-patch16-256 --jsonl my_task.jsonl \
-    --init $W/runs/formal-v1-stage2 --epochs 5 --lr 5e-4 --lora-lr 1e-4 --out $W/runs/my-task
-```
-
-A task jsonl has one question per line:
-`{"state": "...", "question": {"type": "choice", "instructions": "...", "criteria": [...]}, "label": 0, "image": "relative/path.jpg", "split": "train"}`
-(`"audio"` for audio clips, cached with `cache_features.py`; `"images": [...]` for several images).
+Use `scripts/finetune.py`: it builds the task data from folders, a CSV or a
+jsonl, trains from the formal fusion with early stopping, and calibrates. See
+[finetune.md](finetune.md).
