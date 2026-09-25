@@ -162,6 +162,7 @@ def main():
     ap.add_argument("--lora", type=int, default=0, help="LoRA rank for the frozen encoder and head (modality rows only)")
     ap.add_argument("--lora-lr", type=float, default=2e-4)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--init", default="", help="run directory whose fusion.safetensors initialises this run")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
     args.tokens = [int(t) for t in args.image_tokens.split(",")]
@@ -194,6 +195,11 @@ def main():
         in_dims["image"] = image_encoder.dims
     grid = args.image_grid if args.raw_images else 0  # SigLIP base/16 at 256 px: a 16 x 16 patch grid
     model.fusion = OmniFusion(model.encoder.config.hidden_size, in_dims, lora_rank=args.lora, image_grid=grid).to(args.device)
+    if args.init:  # continue from an earlier run's fusion (e.g. stage 2 after an alignment stage)
+        from safetensors.torch import load_file
+
+        model.fusion.load_state_dict(load_file(Path(args.init) / "fusion.safetensors", device=args.device), strict=True)
+        print(f"initialised the fusion from {args.init}") if rank == 0 else None
     for name, p in model.named_parameters():
         p.requires_grad_(name.startswith("fusion."))
     params = [p for p in model.parameters() if p.requires_grad]
