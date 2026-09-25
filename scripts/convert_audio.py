@@ -542,7 +542,30 @@ def songdescriber(src, rng):
 MAX_SECONDS = {"songdescriber": 30}  # long clips are cut to their middle this many seconds
 
 
+def avqa(src, rng):
+    """AVQA's questions about VGGSound clips, answered from the audio (this copy has no
+    frames): four lettered choices. Its val split tests."""
+    import pyarrow as pa
+
+    for split_dir, split in (("train", "train"), ("val", "test")):
+        for path in sorted(glob.glob(str(Path(src) / split_dir / "*.arrow"))):
+            with pa.memory_map(path) as f:
+                table = pa.ipc.open_stream(f).read_all()
+            for r in table.to_pylist():
+                m = re.match(r"(?s)(.*?)\nChoices:\n(.*)$", r["question"].strip())
+                if not m:
+                    continue
+                options = [re.sub(r"^[A-Z]\.\s*", "", o).strip() for o in m.group(2).strip().split("\n")]
+                answer = re.sub(r"^[A-Z]\.\s*", "", r["answer"].strip())
+                if answer not in options or len(set(options)) != len(options):
+                    continue
+                q = {"type": "choice", "instructions": m.group(1).strip(), "criteria": options}
+                key = f"{r['file_name']}"
+                yield split, key, r["audio"], {"state": STATE, "question": q, "label": options.index(answer)}
+
+
 CONVERTERS = {
+    "avqa": avqa,
     "songdescriber": songdescriber,
     "mmau": mmau,
     "vggsound": vggsound,
