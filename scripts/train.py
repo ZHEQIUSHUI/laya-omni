@@ -150,6 +150,9 @@ def main():
     ap.add_argument("--holdout-jsonl", action="append", default=[], help="dataset evaluated zero-shot, never trained on")
     ap.add_argument("--cap", type=int, default=0, help="max samples per source per epoch")
     ap.add_argument("--eval-limit", type=int, default=2000, help="test samples per source")
+    ap.add_argument("--probe-every", type=int, default=0, help="quick evaluation every N optimizer steps (0: off)")
+    ap.add_argument("--probe-limit", type=int, default=200, help="test samples per source for the quick evaluation")
+    ap.add_argument("--warmup", type=int, default=300, help="warm-up optimizer steps")
     ap.add_argument("--out", required=True)
     ap.add_argument("--no-augment", action="store_true", help="games: one phrasing, one label set, fixed order")
     ap.add_argument("--epochs", type=int, default=10)
@@ -165,6 +168,9 @@ def main():
 
     world, rank = int(os.environ.get("WORLD_SIZE", 1)), int(os.environ.get("RANK", 0))
     if world > 1:
+        # Consumer cards (RTX 4090) have no GPU-to-GPU P2P; NCCL's P2P path crashes there.
+        os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+        os.environ.setdefault("NCCL_IB_DISABLE", "1")
         # Rank 0 evaluates between epochs while the others wait: allow a long wait.
         dist.init_process_group("nccl", timeout=datetime.timedelta(hours=2))
         torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
@@ -197,7 +203,7 @@ def main():
 
     per_epoch = len(mix(train, seeded(0), args.cap or None))
     steps = args.epochs * math.ceil(per_epoch / (args.batch * args.accum * world))
-    warm = max(1, min(300, steps // 10))
+    warm = max(1, min(args.warmup, steps // 10))
     lora = [p for n, p in model.named_parameters() if p.requires_grad and n.startswith("fusion.lora.")]
     rest = [p for n, p in model.named_parameters() if p.requires_grad and not n.startswith("fusion.lora.")]
     groups = [{"params": rest, "lr": args.lr}] + ([{"params": lora, "lr": args.lora_lr}] if lora else [])
@@ -228,7 +234,7 @@ def main():
         base = evaluate_all(agent, store, test, args, image_encoder)
         print(json.dumps({"epoch": -1, **base}, ensure_ascii=False), flush=True)
     if world > 1:
-        dist.barrier()
+        dist.barrier(device_ids=[torch.cuda.current_device()])
     step, micro, t0, state = 0, 0, time.time(), {"best": float("inf")}
     for epoch in range(args.epochs):
         model.eval()  # frozen parts keep dropout off; the fusion has no dropout
@@ -258,12 +264,27 @@ def main():
             step += 1
             if step % 100 == 0 and main_rank:
                 print(f"ep {epoch} step {step}/{steps} loss {loss.item():.4f} {time.time() - t0:.0f}s", flush=True)
+            if args.probe_every and step % args.probe_every == 0 and micro % args.accum == 0:
+                # A quick look inside the epoch: a run that stops using the images for some
+                # sources early (as one seed of joint-v2 did) shows up here, not hours later.
+                if world > 1:
+                    dist.barrier(device_ids=[torch.cuda.current_device()])
+                if main_rank:
+                    probe = evaluate_sources(agent, store, test, argparse.Namespace(**{**vars(args), "eval_limit": args.probe_limit}),
+                                             image_encoder, args.tokens[0])
+                    gap = {k: round(v["with"]["acc"] - v["without"]["acc"], 3) for k, v in probe.items()}
+                    print(json.dumps({"probe_step": step, "gain_over_text": gap}), flush=True)
+                    log.write(json.dumps({"probe_step": step, "metrics": probe}) + "\n")
+                    log.flush()
+                    model.eval()
+                if world > 1:
+                    dist.barrier(device_ids=[torch.cuda.current_device()])
         if world > 1:
-            dist.barrier()
+            dist.barrier(device_ids=[torch.cuda.current_device()])
         if main_rank:
             end_of_epoch(agent, store, test, args, image_encoder, model, epoch, step, log, out, state)
         if world > 1:
-            dist.barrier()
+            dist.barrier(device_ids=[torch.cuda.current_device()])
     if world > 1:
         dist.destroy_process_group()
     if main_rank:
