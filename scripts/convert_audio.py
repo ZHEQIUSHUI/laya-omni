@@ -409,7 +409,104 @@ def minds14(src, rng):
             yield split, key, r["audio"], {"state": STATE, "question": q, "label": int(other == intent)}
 
 
+def similar_labels(label, labels, rng, k):
+    """k wrong labels, half sharing a word with the right one ('people marching' vs
+    'people running') so the name alone does not give it away."""
+    words = set(label.split())
+    near = [l for l in labels if l != label and words & set(l.split())]
+    far = [l for l in labels if l != label and l not in near]
+    out = []
+    for _ in range(k):
+        pool = near if near and rng.random() < 0.5 else far
+        pick = rng.choice(pool)
+        pool.remove(pick)
+        out.append(pick)
+    return out
+
+
+NO_SPEECH = re.compile(r"\b(no|not contain any|does not contain|doesn't contain|without)\b[^.]*\bspeech", re.I)
+NO_MUSIC = re.compile(r"\b(no|not contain any|does not contain|doesn't contain|without)\b[^.]*\bmusic", re.I)
+SPEECH_ASK = ["Is anyone speaking in this clip?", "Does the audio contain speech?", "录音里有人说话吗？"]
+MUSIC_ASK = ["Is there music in this clip?", "Does the audio contain music?", "录音里有音乐吗？"]
+
+
+def vggsound(src, rng, audiosetcaps=None):
+    """VGGSound's 310 sound classes for every clip; for training clips that
+    AudioSetCaps covers, also its short description (caption matching) and whether
+    the clip has speech or music. The test clips are VGGSound's own test set."""
+    import csv
+
+    qa = {}
+    qa_file = Path(audiosetcaps or Path(src).parent / "AudioSetCaps") / "Dataset" / "VGGSound_Qwen-Audio_Q&A.csv"
+    if qa_file.exists():
+        with open(qa_file) as fh:
+            for row in csv.DictReader(fh):
+                qa[row["id"]] = row
+    labels = sorted({x for p in glob.glob(str(Path(src) / "data" / "*.parquet"))
+                     for x in pq.read_table(p, columns=["caption"]).column("caption").to_pylist()})
+    pool = CaptionPool({k: [v["answer_1"]] for k, v in qa.items() if v.get("answer_1")})
+    for path in sorted(glob.glob(str(Path(src) / "data" / "*.parquet"))):
+        split = "test" if Path(path).name.startswith("test") else "train"
+        for r in pq.read_table(path).to_pylist():
+            clip = re.sub(r"\.\w+$", "", (r["audio"].get("path") or "").split("/")[-1])
+            label = r["caption"]
+            options = similar_labels(label, list(labels), rng, rng.randint(1, 3)) + [label]
+            rng.shuffle(options)
+            q = {"type": "choice", "instructions": rng.choice(SOUND_ASK), "criteria": options}
+            yield split, clip, r["audio"], {"state": STATE, "question": q, "label": options.index(label)}
+            other = label if rng.random() < 0.5 else similar_labels(label, list(labels), rng, 1)[0]
+            q = {"type": "noul", "instructions": rng.choice(SOUND_IS).format(other)}
+            yield split, clip, r["audio"], {"state": STATE, "question": q, "label": int(other == label)}
+            row = qa.get(clip)
+            if split != "train" or not row:
+                continue
+            if row.get("answer_1"):
+                for q, y in caption_questions(clip, row["answer_1"].strip().rstrip("."), pool, rng):
+                    yield split, clip, r["audio"], {"state": STATE, "question": q, "label": y}
+            if row.get("answer_2"):
+                q = {"type": "noul", "instructions": rng.choice(SPEECH_ASK)}
+                yield split, clip, r["audio"], {"state": STATE, "question": q, "label": int(not NO_SPEECH.search(row["answer_2"]))}
+            if row.get("answer_3"):
+                q = {"type": "noul", "instructions": rng.choice(MUSIC_ASK)}
+                yield split, clip, r["audio"], {"state": STATE, "question": q, "label": int(not NO_MUSIC.search(row["answer_3"]))}
+
+
+def slurp(src, rng):
+    """SLURP spoken commands to a home assistant, 101 intents ('alarm_set'). Wrong
+    options are half from the same scenario ('alarm_query'); official splits, with
+    the synthetic (TTS) recordings added to training. Clips are keyed by content,
+    since each sentence was recorded several times."""
+    files = sorted(glob.glob(str(Path(src) / "data" / "*.parquet")))
+    meta = json.loads(pq.ParquetFile(files[0]).schema_arrow.metadata[b"huggingface"])
+    names = meta["info"]["features"]["intent"]["names"]
+    human = [n.replace("_", " ").replace("iot", "smart home").replace("qa", "question") for n in names]
+    by_scenario = {}
+    for i, n in enumerate(names):
+        by_scenario.setdefault(n.split("_")[0], []).append(i)
+    for path in files:
+        name = Path(path).name
+        split = "test" if name.startswith("test") else "train"  # train, train_synthetic and devel train
+        for r in pq.read_table(path).to_pylist():
+            intent = r.get("intent")
+            if intent is None or not r.get("audio") or not r["audio"].get("bytes"):
+                continue
+            key = hashlib.md5(r["audio"]["bytes"]).hexdigest()
+            same = [i for i in by_scenario[names[intent].split("_")[0]] if i != intent]
+            wrong = set()
+            for _ in range(rng.randint(1, 3)):
+                cand = rng.choice(same) if same and rng.random() < 0.5 else rng.randrange(len(names))
+                if cand != intent:
+                    wrong.add(cand)
+            options = [human[i] for i in wrong] + [human[intent]]
+            rng.shuffle(options)
+            q = {"type": "choice", "instructions": rng.choice(["What does the user want?", "Which command is this?", "用户想让助手做什么？"]),
+                 "criteria": options}
+            yield split, key, r["audio"], {"state": STATE, "question": q, "label": options.index(human[intent])}
+
+
 CONVERTERS = {
+    "vggsound": vggsound,
+    "slurp": slurp,
     "minds14": minds14,
     "musicbench": musicbench,
     "clothoaqa": clothoaqa,
