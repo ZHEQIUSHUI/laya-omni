@@ -182,7 +182,7 @@ def main():
     report = json.loads((out / "eval.json").read_text())
     for k, v in report.items():
         print(f"validation {k}: accuracy {v['with']['acc']:.3f} (without the image/audio {v['without']['acc']:.3f}), "
-              f"NLL {v.get('held_half_after', v['with'])['nll']:.3f} after calibration")
+              f"NLL {v['with']['nll']:.3f} over {v['with']['n']} questions before calibration")
     print(f"done: Omni.load({str(out)!r}, laya=..., image_encoder=..., audio_encoder=...)")
 
 

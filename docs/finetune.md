@@ -97,12 +97,12 @@ chance 0.25), same settings, best test accuracy:
 | 500 | **0.55** | 0.35 |
 | 2000 | **0.68** | 0.26 |
 
-With `finetune.py`:
+With `finetune.py` (base formal-v1 unless noted):
 
 - snake, 500 frames (400 train / 100 validation) with VQAv2 and ESC-50
   replay: validation 0.55, ESC-50 still 0.96 (0.955 before), so general
   ability is kept;
-- cough vs laughter, 200 clips (160 train / 40 validation): validation 1.00.
+- cough vs laughter, 200 clips (160 train / 40 validation): validation 1.00; from formal-v2, 0.975 (one clip wrong).
 
 Tasks about what is in the picture or clip adapt fast; tasks that need
 reasoning about rules (the snake's next move) need more examples.
