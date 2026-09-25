@@ -194,6 +194,11 @@ def main():
         image_encoder = ImageEncoder(args.image_encoder, device=args.device, pool=1)
         in_dims["image"] = image_encoder.dims
     grid = args.image_grid if args.raw_images else 0  # SigLIP base/16 at 256 px: a 16 x 16 patch grid
+    if args.init:  # keep the initialising run's modalities and layout, even ones this data lacks
+        init_cfg = json.loads((Path(args.init) / "fusion_config.json").read_text())
+        in_dims = {**init_cfg["in_dims"], **in_dims}
+        grid = init_cfg.get("image_grid", grid)
+        args.lora = init_cfg.get("lora_rank", args.lora)
     model.fusion = OmniFusion(model.encoder.config.hidden_size, in_dims, lora_rank=args.lora, image_grid=grid).to(args.device)
     if args.init:  # continue from an earlier run's fusion (e.g. stage 2 after an alignment stage)
         from safetensors.torch import load_file

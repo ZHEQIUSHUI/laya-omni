@@ -9,12 +9,20 @@ description = "Laya typed decisions with optional image and audio inputs"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
-dependencies = ["torch>=2.4", "transformers>=4.57", "safetensors", "numpy", "tokenizers>=0.21"]
+dependencies = ["torch>=2.4", "transformers>=5.0", "safetensors", "numpy", "tokenizers>=0.21"]
 
 [project.optional-dependencies]
-audio = ["qwen-asr", "librosa", "soundfile"]
+audio = ["librosa", "soundfile"]
 image = ["pillow"]
+web = ["fastapi", "uvicorn", "python-multipart", "pillow", "librosa", "soundfile"]
+train = ["pyarrow", "pillow", "librosa", "soundfile"]
 dev = ["pytest"]
+
+[project.scripts]
+laya-omni = "laya_omni.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["laya_omni*"]
+
+[tool.setuptools.package-data]
+laya_omni = ["web/*"]
