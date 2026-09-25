@@ -539,7 +539,7 @@ def songdescriber(src, rng):
             yield "test", r["track_id"], r["path"], {"state": STATE, "question": q, "label": y}
 
 
-MAX_SECONDS = {"songdescriber": 30}  # long clips are cut to their middle this many seconds
+MAX_SECONDS = {"songdescriber": 30, "fsd50k": 30}  # long clips are cut to their middle this many seconds
 
 
 def avqa(src, rng):
