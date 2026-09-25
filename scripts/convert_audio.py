@@ -504,7 +504,47 @@ def slurp(src, rng):
             yield split, key, r["audio"], {"state": STATE, "question": q, "label": options.index(human[intent])}
 
 
+def mmau(src, rng):
+    """MMAU test-mini (the split with public answers): sound, speech and music
+    multiple choice, as a zero-shot benchmark. Every row is a test row."""
+    for path in sorted(glob.glob(str(Path(src) / "**" / "test_mini-*.parquet"), recursive=True)):
+        for r in pq.read_table(path).to_pylist():
+            try:
+                options = json.loads(r["choices"]) if isinstance(r["choices"], str) else list(r["choices"])
+            except json.JSONDecodeError:
+                continue
+            options = [str(o).strip() for o in options]
+            if r.get("answer") not in options or len(set(options)) != len(options) or len(options) > 6:
+                continue
+            q = {"type": "choice", "instructions": r["question"].strip(), "criteria": options}
+            row = {"state": STATE, "question": q, "label": options.index(r["answer"]), "task": r.get("task")}
+            yield "test", r["id"], r["audio"], row
+
+
+def songdescriber(src, rng):
+    """Song Describer: full tracks with several listeners' captions, as a zero-shot
+    caption-matching test (all rows test). Tracks are cut to their middle 30 s below."""
+    rows = [r for p in sorted(glob.glob(str(Path(src) / "**" / "*.parquet"), recursive=True)) for r in pq.read_table(p).to_pylist()]
+    by_track = {}
+    for r in rows:
+        by_track.setdefault(r["track_id"], []).append(r["caption"].strip().rstrip("."))
+    pool = CaptionPool(by_track)
+    seen = set()
+    for r in rows:
+        if r["track_id"] in seen:  # one audio per track; its captions are asked about once
+            continue
+        seen.add(r["track_id"])
+        caption = rng.choice(by_track[r["track_id"]])
+        for q, y in caption_questions(r["track_id"], caption, pool, rng):
+            yield "test", r["track_id"], r["path"], {"state": STATE, "question": q, "label": y}
+
+
+MAX_SECONDS = {"songdescriber": 30}  # long clips are cut to their middle this many seconds
+
+
 CONVERTERS = {
+    "songdescriber": songdescriber,
+    "mmau": mmau,
     "vggsound": vggsound,
     "slurp": slurp,
     "minds14": minds14,
@@ -538,6 +578,10 @@ def main():
             if key not in saved:  # one file per clip, however many questions ask about it
                 try:
                     wav = decode(cell)
+                    limit = MAX_SECONDS.get(args.name, 0) * SR
+                    if limit and len(wav) > limit:  # keep the middle
+                        start = (len(wav) - limit) // 2
+                        wav = wav[start : start + limit]
                 except Exception as e:  # e.g. GTZAN's corrupt jazz.00054.wav
                     print(f"skipping undecodable clip {key}: {e}")
                     bad.add(key)
