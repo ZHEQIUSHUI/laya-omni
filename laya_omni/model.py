@@ -85,7 +85,8 @@ class OmniFusion(nn.Module):
     and text-only rows compute exactly what Laya computes.
     """
 
-    def __init__(self, dims, in_dims, max_items=8, max_frames=1024, lora_rank=0, lora_alpha=None, lora_layers=None):
+    def __init__(self, dims, in_dims, max_items=8, max_frames=1024, lora_rank=0, lora_alpha=None, lora_layers=None,
+                 image_grid=0):
         super().__init__()
         self.in_dims = dict(in_dims)
         self.max_items = max_items
@@ -104,6 +105,12 @@ class OmniFusion(nn.Module):
         self.frame_emb = nn.Parameter(torch.zeros(max_frames, dims))
         nn.init.normal_(self.item_emb, std=0.02)
         nn.init.normal_(self.frame_emb, std=0.02)
+        # Image tokens get a 2-D position on a side x side grid instead of a frame index,
+        # so 256 patch tokens and their 2x2-pooled 64 share positions: the grid is
+        # pooled the same way the features are.
+        self.image_grid = image_grid
+        if image_grid:
+            self.image_pos = nn.Parameter(torch.randn(image_grid, image_grid, dims) * 0.02)
 
     def tokens(self, inputs):
         """inputs: {modality: (feats, mask or None, present or None)} -> (tokens, valid).
@@ -124,7 +131,7 @@ class OmniFusion(nn.Module):
             if n > self.max_items or t > self.frame_emb.shape[0]:
                 raise ValueError(f"{name}: at most {self.max_items} items of {self.frame_emb.shape[0]} frames per row")
             tok = self.projectors[name](feats) + self.modality_emb[name]
-            tok = tok + self.item_emb[:n, None, :] + self.frame_emb[:t]
+            tok = tok + self.item_emb[:n, None, :] + self.positions(name, t).to(tok.dtype)
             ok = torch.ones(b, n, t, dtype=torch.bool, device=tok.device)
             if mask is not None:
                 ok &= mask.bool()
@@ -133,6 +140,17 @@ class OmniFusion(nn.Module):
             tokens.append(tok.reshape(b, n * t, -1))
             valid.append(ok.reshape(b, n * t))
         return torch.cat(tokens, 1), torch.cat(valid, 1)
+
+    def positions(self, name, t):
+        """(t, dims) position embeddings for t tokens of one item."""
+        side = int(round(t**0.5))
+        if name == "image" and self.image_grid and side * side == t and self.image_grid % side == 0:
+            grid = self.image_pos.permute(2, 0, 1)[None]  # (1, dims, g, g)
+            k = self.image_grid // side
+            if k > 1:
+                grid = F.avg_pool2d(grid, k)
+            return grid[0].flatten(1).T
+        return self.frame_emb[:t]
 
     def attach(self, model):
         """Hook LoRA deltas onto the model's target linear layers (creating them the

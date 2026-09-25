@@ -80,6 +80,19 @@ def to_internal(qdef):
     return {"t": kind, "ins": ins if isinstance(ins, str) else json.dumps(ins), "crit": criteria}
 
 
+def prepare_items(tok, max_len, head_max_len, state, questions):
+    """Token sequences for Laya questions; a plain function so data workers can use it."""
+    items, internal = [], []
+    for qid, definition in questions.items():
+        q = to_internal(definition)
+        ids, markers = build_sequence(tok, state, q, max_len, head_max_len)
+        if len(markers) != len(render_options(q)):
+            raise ValueError(f"Question {qid!r} has too many options for the token budget")
+        items.append({"ids": ids, "markers": markers, "qtype": QTYPES[q["t"]]})
+        internal.append(q)
+    return items, internal
+
+
 class Agent:
     """Load a Laya checkpoint directory and, optionally, a laya-omni fusion checkpoint."""
 
@@ -116,21 +129,14 @@ class Agent:
             lora_rank=self.fusion_cfg.get("lora_rank", 0),
             lora_alpha=self.fusion_cfg.get("lora_alpha"),
             lora_layers=self.fusion_cfg.get("lora_layers"),
+            image_grid=self.fusion_cfg.get("image_grid", 0),
         )
         self.model.fusion = fusion  # attaching creates the LoRA modules the weights fill
         fusion.load_state_dict(load_file(path / "fusion.safetensors"), strict=True)
         fusion.to(self.device, self.dtype).eval()
 
     def prepare(self, state, questions):
-        items, internal = [], []
-        for qid, definition in questions.items():
-            q = to_internal(definition)
-            ids, markers = build_sequence(self.tok, state, q, self.max_len, self.head_max_len)
-            if len(markers) != len(render_options(q)):
-                raise ValueError(f"Question {qid!r} has too many options for the token budget")
-            items.append({"ids": ids, "markers": markers, "qtype": QTYPES[q["t"]]})
-            internal.append(q)
-        return items, internal
+        return prepare_items(self.tok, self.max_len, self.head_max_len, state, questions)
 
     def _features(self, feats):
         if isinstance(feats, torch.Tensor):

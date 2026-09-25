@@ -141,3 +141,13 @@ def test_lora_hooks_the_encoder_and_head_and_trains():
     logits.logsumexp(-1).sum().backward()
     assert all(m.A.grad is not None and m.A.grad.abs().sum() > 0 for m in omni.fusion.lora.values())
     assert omni.fusion.row_mask is None  # cleared after the forward
+
+
+@torch.no_grad()
+def test_image_grid_positions_pool_like_the_features():
+    torch.manual_seed(0)
+    fusion = OmniFusion(128, IN_DIMS, image_grid=4)
+    full, pooled = fusion.positions("image", 16), fusion.positions("image", 4)
+    grid = full.T.reshape(128, 4, 4)
+    assert torch.allclose(pooled, torch.nn.functional.avg_pool2d(grid[None], 2)[0].flatten(1).T)
+    assert torch.equal(fusion.positions("audio", 5), fusion.frame_emb[:5])  # audio keeps frame indices

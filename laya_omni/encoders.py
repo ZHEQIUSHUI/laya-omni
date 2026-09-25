@@ -24,6 +24,11 @@ class ImageEncoder:
         self.dims = self.model.config.hidden_size
 
     @torch.inference_mode()
+    def encode_pixels(self, pixels):
+        """Preprocessed (B, 3, H, W) pixels -> unpooled (B, patches, D) patch features."""
+        return self.model(pixel_values=pixels.to(self.device, self.dtype)).last_hidden_state
+
+    @torch.inference_mode()
     def __call__(self, images):
         """images: a PIL image or list of them -> (B, T, D) features."""
         single = not isinstance(images, (list, tuple))
