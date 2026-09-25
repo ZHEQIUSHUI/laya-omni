@@ -1,6 +1,6 @@
 """Convert public audio datasets into laya-omni rows.
 
-Each dataset becomes <out>/<name>.jsonl plus 16 kHz mono WAV files under
+Each dataset becomes <out>/<name>.jsonl plus 16 kHz mono FLAC (or WAV) files under
 <out>/<name>/. Rows look like {"state", "question", "label", "audio", "split"};
 see laya_omni/data.py. Questions vary in phrasing and language, choice options
 are a random subset around the answer, and noul questions are balanced.
@@ -11,14 +11,19 @@ are a random subset around the answer, and noul questions are balanced.
     python scripts/convert_audio.py gtzan datasets/gtzan --out data/audio
     python scripts/convert_audio.py clotho datasets/Clotho --out data/audio
     python scripts/convert_audio.py audiocaps datasets/audiocaps --out data/audio
+    python scripts/convert_audio.py clothoaqa datasets/ClothoAQA --out data/audio
+    python scripts/convert_audio.py musicbench datasets/MusicBench --out data/audio
+    python scripts/convert_audio.py minds14 datasets/minds14 --out data/audio
 """
 
 import argparse
 import glob
+import hashlib
 import io
 import json
 import random
 import re
+import zlib
 from collections import Counter
 from pathlib import Path
 
@@ -285,7 +290,129 @@ def audiocaps(src, rng):
                     yield split, clip, r["audio"], {"state": STATE, "question": q, "label": y}
 
 
+def clothoaqa(src, rng):
+    """Clotho-AQA yes/no questions about sounds (answers that start with yes/no count);
+    its validation clips train and its test clips test."""
+    for path in sorted(glob.glob(str(Path(src) / "clotho_aqa" / "*.parquet"))):
+        split = "test" if "_test_" in Path(path).name else "train"
+        for i, r in enumerate(pq.read_table(path).to_pylist()):
+            answer = (r.get("answer") or "").strip().lower()
+            word = re.match(r"^(yes|no)\b", answer)
+            if not word or not r.get("question"):
+                continue
+            # Each clip is asked several questions, one row each: key clips by content.
+            key = hashlib.md5(r["audio"]["bytes"]).hexdigest()
+            q = {"type": "noul", "instructions": r["question"].strip()}
+            yield split, key, r["audio"], {"state": STATE, "question": q, "label": int(word.group(1) == "yes")}
+
+
+KEYS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+TEMPO = [("slow", "慢"), ("moderate", "中等"), ("fast", "快")]
+
+
+def music_questions(r, pool, clip, rng):
+    """Questions about one MusicBench clip: its description, tempo, mode, key and metre."""
+    cap = (r.get("alt_caption") or "").strip()
+    if cap:  # alt_caption carries no "the key is ..." control sentences that would give answers away
+        for q, y in caption_questions(clip, cap, pool, rng):
+            yield q, y
+    bpm = r.get("bpm")
+    if bpm and min(abs(bpm - 80), abs(bpm - 120)) > 5:  # skip clips near a tempo boundary
+        zh = rng.random() < 0.3
+        options = [t[1] if zh else t[0] for t in TEMPO]
+        answer = options[0 if bpm < 80 else 1 if bpm < 120 else 2]
+        ask = "这段音乐的节奏是快还是慢？" if zh else rng.choice(["How fast is this music?", "What is the tempo of this piece?"])
+        yield {"type": "choice", "instructions": ask, "criteria": options}, options.index(answer)
+    key, prob = r.get("key") or [], (r.get("keyprob") or [0])[0]
+    if len(key) == 2 and prob > 0.6:
+        root, mode = key
+        yield {"type": "choice", "instructions": rng.choice(["Is this in a major or a minor key?", "Does the music sound major or minor?"]),
+               "criteria": ["major", "minor"]}, int(mode == "minor")
+        if prob > 0.7 and root in KEYS:
+            others = rng.sample([k for k in KEYS if k != root], 3)
+            options = others + [root]
+            rng.shuffle(options)
+            yield {"type": "choice", "instructions": "What key is this music in?", "criteria": options}, options.index(root)
+    beats = r.get("beats") or []  # [beat times, beat numbers within the bar]
+    meter = int(max(beats[1])) if len(beats) > 1 and beats[1] else None
+    if meter in (3, 4):  # 2 vs 4 is too ambiguous to hear
+        yield {"type": "choice", "instructions": "Does the beat count to three or to four?", "criteria": ["three", "four"]}, int(meter == 4)
+
+
+def musicbench(src, rng):
+    """MusicBench: MusicCaps clips with pitch/tempo-shifted copies and extracted tempo,
+    key, chords and beats. Test_B's clips test; every training copy of a test clip is dropped."""
+    import tarfile
+
+    src = Path(src)
+    train = [json.loads(l) for l in open(src / "MusicBench_train.json")]
+    test = [json.loads(l) for l in open(src / "MusicBench_test_B.json")]
+    base = lambda loc: re.sub(r"_\d+$", "", Path(loc).stem)  # augmented copies end in _1, _2, ...
+    held = {base(r["location"]) for r in test}
+    rows = {r["location"]: ("test", r) for r in test}
+    rows.update({r["location"]: ("train", r) for r in train if base(r["location"]) not in held})
+    pools = {s: CaptionPool({loc: [r["alt_caption"]] for loc, (sp, r) in rows.items() if sp == s and r.get("alt_caption")})
+             for s in ("train", "test")}
+    archives = sorted(p for p in src.glob("*.tar.gz") if "FMACaps" not in p.name)
+    for archive in archives:
+        with tarfile.open(archive, mode="r|gz") as tar:
+            for member in tar:
+                if not member.isfile() or not member.name.endswith(".wav"):
+                    continue
+                loc = "/".join(Path(member.name).parts[-2:])  # "data_aug2/<id>_1.wav"
+                if loc not in rows:
+                    continue
+                split, r = rows[loc]
+                cell = {"bytes": tar.extractfile(member).read()}
+                for q, y in music_questions(r, pools[split], loc, rng):
+                    yield split, loc, cell, {"state": STATE, "question": q, "label": y}
+
+
+MINDS_INTENTS = [  # PolyAI/minds14 intent_class order
+    ("abroad", "use the card abroad", "在国外用卡"),
+    ("address", "change their address", "修改地址"),
+    ("app_error", "report an app error", "反馈应用故障"),
+    ("atm_limit", "ask about the ATM withdrawal limit", "询问取款限额"),
+    ("balance", "check the balance", "查询余额"),
+    ("business_loan", "ask about a business loan", "咨询企业贷款"),
+    ("card_issues", "report a card problem", "反馈银行卡问题"),
+    ("cash_deposit", "deposit cash", "存现金"),
+    ("direct_debit", "set up a direct debit", "设置自动扣款"),
+    ("freeze", "freeze the card", "冻结银行卡"),
+    ("high_value_payment", "make a large payment", "办理大额付款"),
+    ("joint_account", "open a joint account", "开联名账户"),
+    ("latest_transactions", "see recent transactions", "查看最近交易"),
+    ("pay_bill", "pay a bill", "缴费"),
+]
+INTENT_ASK = ["What does the caller want to do?", "Why is the customer calling the bank?", "来电者想办什么业务？"]
+INTENT_IS = ["Does the caller want to {}?", "Is the customer calling to {}?", "来电者是想{}吗？"]
+
+
+def minds14(src, rng):
+    """MINDS-14 banking intents in 14 languages; a tenth of the recordings, by path, test."""
+    for path in sorted(glob.glob(str(Path(src) / "*" / "*.parquet"))):
+        if Path(path).parent.name == "all":  # the per-language folders hold the same rows
+            continue
+        for r in pq.read_table(path).to_pylist():
+            intent = r.get("intent_class")
+            if intent is None or not 0 <= intent < len(MINDS_INTENTS):
+                continue
+            key = r.get("path") or hashlib.md5(r["audio"]["bytes"]).hexdigest()
+            split = "test" if zlib.crc32(str(key).encode()) % 10 == 0 else "train"
+            zh = rng.random() < 0.3
+            names = [x[2] if zh else x[1] for x in MINDS_INTENTS]
+            q, y = choice(rng, names[intent], names, [INTENT_ASK[2]] if zh else INTENT_ASK[:2], (2, 4))
+            yield split, key, r["audio"], {"state": STATE, "question": q, "label": y, "lang": r.get("lang_id")}
+            other = intent if rng.random() < 0.5 else rng.choice([i for i in range(len(MINDS_INTENTS)) if i != intent])
+            ask = INTENT_IS[2] if zh else rng.choice(INTENT_IS[:2])
+            q = {"type": "noul", "instructions": ask.format(names[other])}
+            yield split, key, r["audio"], {"state": STATE, "question": q, "label": int(other == intent)}
+
+
 CONVERTERS = {
+    "minds14": minds14,
+    "musicbench": musicbench,
+    "clothoaqa": clothoaqa,
     "esc50": esc50,
     "cremad": cremad,
     "vocalsound": vocalsound,
@@ -301,6 +428,7 @@ def main():
     ap.add_argument("src")
     ap.add_argument("--out", default="data/audio")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--format", choices=("flac", "wav"), default="flac")
     args = ap.parse_args()
     rng = random.Random(args.seed)
     out = Path(args.out)
@@ -317,8 +445,8 @@ def main():
                     print(f"skipping undecodable clip {key}: {e}")
                     bad.add(key)
                     continue
-                path = out / args.name / f"{len(saved):06d}.wav"
-                sf.write(path, wav, SR)
+                path = out / args.name / f"{len(saved):06d}.{args.format}"
+                sf.write(path, wav, SR, subtype="PCM_16")  # FLAC is about half the size of WAV
                 saved[key] = str(path.relative_to(out))
             row.update(audio=saved[key], split=split)
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
