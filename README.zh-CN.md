@@ -99,7 +99,7 @@ python scripts/finetune.py --folders my_task/ --question "这个零件有缺陷�
 
 ## 状态
 
-早期研究版本，权重尚未发布。已知短板：科学示意图（AI2D、TQA）、空间关系（VSR），
+早期研究版本。权重：[zheqiushui/laya-omni](https://huggingface.co/zheqiushui/laya-omni)（融合模块 + 音频编码器）。已知短板：科学示意图（AI2D、TQA）、空间关系（VSR），
 以及需要推演「接下来会怎样」的任务（如游戏走法），它擅长的是判断「画面 / 声音里有什么」。
 
 ## 许可与致谢

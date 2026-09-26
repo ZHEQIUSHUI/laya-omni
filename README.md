@@ -110,7 +110,8 @@ rows carrying an image or audio clip. Details and the reasons for each choice:
 
 ## Status
 
-Early research release. Weights are not published yet. Known weak spots:
+Early research release. Weights: [zheqiushui/laya-omni](https://huggingface.co/zheqiushui/laya-omni)
+(fusion + audio encoder; `hf download zheqiushui/laya-omni --local-dir laya-omni`). Known weak spots:
 science diagrams (AI2D, TQA), spatial relations (VSR), and tasks that need
 reasoning about what happens next (game moves) rather than what is there.
 
