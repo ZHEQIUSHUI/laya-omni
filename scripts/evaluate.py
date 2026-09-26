@@ -54,7 +54,8 @@ def load_rows(paths, holdout, store, audio_features, limit):
 @torch.no_grad()
 def logits_for(agent, store, samples, encoder, tokens, device, workers):
     """Raw option logits with and without the modality features, plus labels."""
-    data = Batches(samples, 64, agent.tok, agent.max_len, agent.head_max_len, store)
+    data = Batches(samples, 64, agent.tok, agent.max_len, agent.head_max_len, store,
+                   image_size=encoder.image_size if encoder is not None else 256)
     loader = torch.utils.data.DataLoader(data, batch_size=None, num_workers=workers)
     with_m, without, labels = [], [], []
     for cpu in loader:

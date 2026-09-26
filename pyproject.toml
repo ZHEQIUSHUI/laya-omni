@@ -12,10 +12,10 @@ requires-python = ">=3.10"
 dependencies = ["torch>=2.4", "transformers>=5.0", "safetensors", "numpy", "tokenizers>=0.21"]
 
 [project.optional-dependencies]
-audio = ["librosa", "soundfile"]
+audio = ["librosa", "soundfile", "av"]
 image = ["pillow"]
-web = ["fastapi", "uvicorn", "python-multipart", "pillow", "librosa", "soundfile"]
-train = ["pyarrow", "pillow", "librosa", "soundfile"]
+web = ["fastapi", "uvicorn", "python-multipart", "pillow", "librosa", "soundfile", "av"]
+train = ["pyarrow", "pillow", "librosa", "soundfile", "av"]
 dev = ["pytest"]
 
 [project.scripts]

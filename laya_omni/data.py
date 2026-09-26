@@ -58,10 +58,11 @@ def feature_prefix(roots, stem):
     return Path(dirs[0] if dirs else ".") / stem
 
 
-def shuffled(question, label, rng):
-    """Shuffle a choice question's options, returning the question and remapped label."""
+def shuffled(question, label, rng, probs=None):
+    """Shuffle a choice question's options, returning the question and remapped label
+    (and, given per-option probabilities, those in the new order as a third value)."""
     if question["type"] != "choice":
-        return question, label
+        return (question, label) if probs is None else (question, label, probs)
     crit = question["criteria"]
     items = list(crit.items()) if isinstance(crit, dict) else [(c, None) for c in crit]
     order = list(range(len(items)))
@@ -69,7 +70,25 @@ def shuffled(question, label, rng):
     new = [items[i] for i in order]
     q = dict(question)
     q["criteria"] = dict(new) if isinstance(crit, dict) else [k for k, _ in new]
-    return q, order.index(label)
+    if probs is None:
+        return q, order.index(label)
+    return q, order.index(label), [probs[i] for i in order]
+
+
+def teacher_key(row):
+    """Identifies a question across the dataset jsonl and the teacher's labelled copy."""
+    q = row["question"]
+    return json.dumps([row.get("image") or row.get("images"), q["instructions"], q.get("criteria")], ensure_ascii=False)
+
+
+def load_teacher(paths):
+    """Teacher-labelled rows (scripts/teacher_label.py) -> {teacher_key: option probabilities}."""
+    out = {}
+    for path in paths:
+        for line in open(path, encoding="utf-8"):
+            r = json.loads(line)
+            out[teacher_key(r)] = r["teacher"]["probs"]
+    return out
 
 
 class GameSource:
@@ -105,8 +124,9 @@ class GameSource:
 class JsonlSource:
     """Converted datasets: jsonl rows of {state, question, label, image?, audio?, split}."""
 
-    def __init__(self, path, split, store, stores, name=None, shuffle_options=True):
-        """stores: {"image": store_name, "audio": store_name} for the keys rows may carry."""
+    def __init__(self, path, split, store, stores, name=None, shuffle_options=True, teacher=None):
+        """stores: {"image": store_name, "audio": store_name} for the keys rows may carry.
+        teacher: {teacher_key: option probabilities} from load_teacher(), attached to matching rows."""
         self.name = name or Path(path).stem
         self.shuffle_options = shuffle_options
         self.rows, self.missing = [], 0
@@ -119,7 +139,12 @@ class JsonlSource:
             except KeyError:  # its image or clip could not be encoded when caching
                 self.missing += 1
                 continue
-            self.rows.append({"state": r.get("state", ""), "question": r["question"], "label": r["label"], "features": feats, "source": self.name})
+            row = {"state": r.get("state", ""), "question": r["question"], "label": r["label"], "features": feats, "source": self.name}
+            probs = teacher.get(teacher_key(r)) if teacher else None
+            n = 2 if r["question"]["type"] == "noul" else len(r["question"].get("criteria") or [])
+            if probs is not None and len(probs) == n:
+                row["teacher"] = probs
+            self.rows.append(row)
         if self.missing:
             print(f"{self.name} ({split}): {self.missing} rows skipped, their media are missing from the cache")
 
@@ -140,8 +165,12 @@ class JsonlSource:
             return list(self.rows)
         out = []
         for r in self.rows:
-            q, y = shuffled(r["question"], r["label"], rng)
-            out.append({**r, "question": q, "label": y})
+            if "teacher" in r:
+                q, y, t = shuffled(r["question"], r["label"], rng, r["teacher"])
+                out.append({**r, "question": q, "label": y, "teacher": t})
+            else:
+                q, y = shuffled(r["question"], r["label"], rng)
+                out.append({**r, "question": q, "label": y})
         return out
 
 
@@ -162,7 +191,9 @@ class Batches(torch.utils.data.Dataset):
     """One epoch's samples cut into batches, collated on the CPU (DataLoader workers):
     tokenised text, cached audio features, and decoded image pixels."""
 
-    def __init__(self, samples, batch_size, tok, max_len, head_max_len, store, modalities=("image", "audio")):
+    def __init__(self, samples, batch_size, tok, max_len, head_max_len, store, modalities=("image", "audio"),
+                 image_size=IMAGE_SIZE):
+        self.image_size = image_size
         self.chunks = [samples[i : i + batch_size] for i in range(0, len(samples), batch_size)]
         self.tok, self.max_len, self.head_max_len = tok, max_len, head_max_len
         self.store, self.modalities = store, modalities
@@ -188,11 +219,19 @@ class Batches(torch.utils.data.Dataset):
                 for b, it in enumerate(items_m):
                     for j, (store_name, rel) in enumerate(it):
                         index[b, j] = len(pixels)
-                        pixels.append(load_pixels(Path(store_name[len(RAW) :]) / rel))
+                        pixels.append(load_pixels(Path(store_name[len(RAW) :]) / rel, self.image_size))
             else:
                 cached[m] = items_m
         feats = {m: stack_cached(self.store, it) for m, it in cached.items()}
         labels = torch.tensor([s["label"] for s in samples])
+        if any("teacher" in s for s in samples):  # soft targets for distillation, per option marker
+            width = batch["marker_pos"].shape[1]
+            batch["teacher"] = torch.zeros(len(samples), width)
+            batch["teacher_mask"] = torch.zeros(len(samples), dtype=torch.bool)
+            for i, s in enumerate(samples):
+                if "teacher" in s:
+                    batch["teacher"][i, : len(s["teacher"])] = torch.tensor(s["teacher"])
+                    batch["teacher_mask"][i] = True
         return batch, feats, (torch.stack(pixels) if pixels else None), index, labels
 
 

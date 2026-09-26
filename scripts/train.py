@@ -35,7 +35,7 @@ import torch.nn.functional as F
 from safetensors.torch import save_file
 
 from laya_omni.agent import Agent
-from laya_omni.data import RAW, Batches, FeatureStore, GameSource, JsonlSource, feature_prefix, mix, seeded, to_device
+from laya_omni.data import RAW, Batches, FeatureStore, GameSource, JsonlSource, feature_prefix, load_teacher, mix, seeded, to_device
 from laya_omni.model import OmniFusion
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")  # workers fork after the tokenizer is used
@@ -77,12 +77,14 @@ def build_sources(args, store, split):
             parts[0].name = f"holdout:{Path(path).stem}"
             sources.append(parts[0])
         else:
-            sources.append(JsonlSource(path, split, store, stores, shuffle_options=split == "train"))
+            teacher = args.teacher_labels if split == "train" else None
+            sources.append(JsonlSource(path, split, store, stores, shuffle_options=split == "train", teacher=teacher))
     return [s for s in sources if (s.rows if hasattr(s, "rows") else True)]
 
 
-def loader(agent, store, samples, batch_size, workers):
-    data = Batches(samples, batch_size, agent.tok, agent.max_len, agent.head_max_len, store)
+def loader(agent, store, samples, batch_size, workers, image_encoder=None):
+    size = image_encoder.image_size if image_encoder is not None else 256
+    data = Batches(samples, batch_size, agent.tok, agent.max_len, agent.head_max_len, store, image_size=size)
     return torch.utils.data.DataLoader(
         data, batch_size=None, shuffle=False, num_workers=workers, prefetch_factor=4 if workers else None,
         persistent_workers=False,
@@ -103,7 +105,7 @@ def evaluate_sources(agent, store, sources, args, image_encoder, image_tokens, o
     names = [s["source"] for s in samples]
     stats, seen = {}, 0
     with torch.no_grad():
-        for cpu in loader(agent, store, samples, batch_size, args.workers):
+        for cpu in loader(agent, store, samples, batch_size, args.workers, image_encoder):
             b, mods, y = to_device(*cpu, args.device, image_encoder, image_tokens)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 runs = {"with": model(**b, modalities=mods)[0], "without": model(**b)[0]}
@@ -164,10 +166,15 @@ def main():
     ap.add_argument("--lora-lr", type=float, default=2e-4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--init", default="", help="run directory whose fusion.safetensors initialises this run")
+    ap.add_argument("--teacher", action="append", default=[],
+                    help="teacher-labelled rows (scripts/teacher_label.py) for distillation; repeatable")
+    ap.add_argument("--distill-weight", type=float, default=0.3,
+                    help="weight of KL(teacher || model) on rows the teacher answers correctly")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
     args.tokens = [int(t) for t in args.image_tokens.split(",")]
     args.weights = {k: float(v) for k, v in (w.split("=", 1) for w in args.weight)}
+    args.teacher_labels = load_teacher(args.teacher) if args.teacher else None
 
     world, rank = int(os.environ.get("WORLD_SIZE", 1)), int(os.environ.get("RANK", 0))
     if world > 1:
@@ -255,11 +262,18 @@ def main():
         per_rank = len(samples) // (args.batch * world) * args.batch  # equal batch counts on every rank
         mine = [x for i in range(0, per_rank * world, args.batch) if (i // args.batch) % world == rank
                 for x in samples[i : i + args.batch]]
-        for cpu in loader(agent, store, mine, args.batch, args.workers):
+        for cpu in loader(agent, store, mine, args.batch, args.workers, image_encoder):
             b, mods, y = to_device(*cpu, args.device, image_encoder, token_rng.choice(args.tokens))
+            teacher, teacher_mask = b.pop("teacher", None), b.pop("teacher_mask", None)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 logits, _ = model(**b, modalities=mods)
             loss = F.cross_entropy(logits.float(), y)
+            if teacher is not None:  # distill only where the teacher picks the true answer
+                use = teacher_mask & (teacher.argmax(-1) == y)
+                if use.any():
+                    t, logp = teacher[use], F.log_softmax(logits.float()[use], -1)
+                    kl = torch.where(t > 0, t * (torch.log(t.clamp_min(1e-8)) - logp), torch.zeros_like(t)).sum(-1)
+                    loss = loss + args.distill_weight * kl.sum() / len(y)
             (loss / args.accum).backward()
             micro += 1
             if micro % args.accum:
