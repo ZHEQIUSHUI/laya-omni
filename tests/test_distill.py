@@ -24,3 +24,8 @@ def test_teacher_lookup(tmp_path):
     path.write_text('{"image": "a/1.jpg", "question": {"type": "choice", "instructions": "Which?", "criteria": ["x", "y"]}, '
                     '"label": 0, "teacher": {"probs": [0.8, 0.2]}}\n')
     assert load_teacher([path])[teacher_key(row)] == [0.8, 0.2]
+
+
+def test_teacher_key_tells_audio_clips_apart():
+    q = {"type": "noul", "instructions": "Is a dog barking?"}
+    assert teacher_key({"audio": "a.flac", "question": q}) != teacher_key({"audio": "b.flac", "question": q})

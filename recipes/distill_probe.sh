@@ -20,6 +20,6 @@ if [ "$MODE" = distill ]; then for f in $D/teacher/*.jsonl; do TEACH="$TEACH --t
 
 env CUDA_VISIBLE_DEVICES=$GPU PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True PYTHONPATH=. $W/venv/bin/python scripts/train.py \
   --laya $W/models/laya-multilingual --raw-images --image-encoder $W/models/siglip2-base-patch16-256 \
-  --image-tokens 64,256 --audio-features $W/cache/qwen3-asr --lora 16 --batch 16 --accum 2 --workers 12 \
+  --image-tokens 64,256 --audio-features $W/cache/qwen3-asr --lora 16 --batch ${BATCH:-16} --accum ${ACCUM:-2} --workers 12 \
   --lr 2e-4 --lora-lr 4e-5 --warmup 300 --probe-every 3000 --probe-limit 200 --eval-limit 1000 \
   $T $EVAL $TEACH --cap 40000 --epochs 1 --seed 0 --init $W/runs/formal-v2 --out $W/runs/probe-$MODE

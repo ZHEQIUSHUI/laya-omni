@@ -8,7 +8,8 @@ probability of each option letter (Yes / No for noul) from its top log-probabili
         --server http://spark0:8333/v1 --server http://spark1:8333/v1 --workers 32
 
 Writes each input row plus "teacher": {"probs": [...], "model": ...}; rows already in
---out are skipped, so an interrupted run resumes. Only image rows are sent.
+--out are skipped, so an interrupted run resumes. --modality picks image rows (default),
+audio rows (clips sent as 16 kHz WAV, for an omni teacher) or both.
 """
 
 import argparse
@@ -59,9 +60,23 @@ def option_probs(top, row):
     return [m / total for m in mass], total
 
 
-def label(client, model, row, root, max_side):
+def audio_url(path, max_seconds):
+    """A clip as a 16 kHz mono WAV data URL (decoded with laya_omni's loader, so any format works)."""
+    import soundfile as sf
+
+    from laya_omni.encoders import load_audio
+
+    wav = load_audio(path, 16000)[: int(max_seconds * 16000)]
+    buf = io.BytesIO()
+    sf.write(buf, wav, 16000, format="WAV", subtype="PCM_16")
+    return "data:audio/wav;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def label(client, model, row, root, max_side, max_seconds=30):
     imgs = row.get("images") or ([row["image"]] if row.get("image") else [])
     content = [{"type": "image_url", "image_url": {"url": image_url(root / p, max_side)}} for p in imgs]
+    clips = row.get("audios") or ([row["audio"]] if row.get("audio") else [])
+    content += [{"type": "audio_url", "audio_url": {"url": audio_url(root / p, max_seconds)}} for p in clips]
     content.append({"type": "text", "text": prompt(row)})
     r = client.chat.completions.create(
         model=model, messages=[{"role": "user", "content": content}], max_tokens=1, temperature=0,
@@ -81,19 +96,23 @@ def main():
     ap.add_argument("--split", default="train", help="only rows of this split ('' for all)")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--max-side", type=int, default=1024, help="downscale larger images before sending")
+    ap.add_argument("--modality", choices=["image", "audio", "any"], default="image",
+                    help="rows to send: with an image and no audio, with audio (image optional), or any")
     args = ap.parse_args()
 
     from openai import OpenAI
 
     root = Path(args.data).parent
     rows = [json.loads(line) for line in open(args.data, encoding="utf-8")]
-    rows = [r for r in rows if (r.get("image") or r.get("images")) and not r.get("audio")
-            and (not args.split or r.get("split", "train") == args.split)]
+    has_img = lambda r: bool(r.get("image") or r.get("images"))
+    has_aud = lambda r: bool(r.get("audio") or r.get("audios"))
+    keep = {"image": lambda r: has_img(r) and not has_aud(r), "audio": has_aud, "any": lambda r: has_img(r) or has_aud(r)}[args.modality]
+    rows = [r for r in rows if keep(r) and (not args.split or r.get("split", "train") == args.split)]
     if args.limit:
         rows = rows[: args.limit]
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    key = lambda r: json.dumps([r.get("id"), r.get("image") or r.get("images"), r["question"]], sort_keys=True)
+    key = lambda r: json.dumps([r.get("id"), r.get("image") or r.get("images"), r.get("audio"), r["question"]], sort_keys=True)
     done = {key(json.loads(line)) for line in open(out, encoding="utf-8")} if out.exists() else set()
     todo = [r for r in rows if key(r) not in done]
     print(f"{len(rows)} rows, {len(done)} already labelled, {len(todo)} to go", flush=True)

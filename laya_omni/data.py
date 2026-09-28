@@ -78,7 +78,8 @@ def shuffled(question, label, rng, probs=None):
 def teacher_key(row):
     """Identifies a question across the dataset jsonl and the teacher's labelled copy."""
     q = row["question"]
-    return json.dumps([row.get("image") or row.get("images"), q["instructions"], q.get("criteria")], ensure_ascii=False)
+    media = [row.get("image") or row.get("images"), row.get("audio") or row.get("audios")]
+    return json.dumps([*media, q["instructions"], q.get("criteria")], ensure_ascii=False)
 
 
 def load_teacher(paths):
