@@ -13,21 +13,37 @@ for bit.
 
 ## What it can do
 
-Test accuracy of `formal-v2` on questions it never trained on, against Laya
-asked the same question without the image or audio:
+Standard benchmarks, compared with small VLMs on the same questions, the same
+RTX 4090, one question at a time from the image or audio file to the answer.
+Each cell is accuracy / median latency:
 
-| | Laya (text only) | laya-omni |
-|---|---:|---:|
-| Photo questions (VQAv2 / GQA) | 0.45 / 0.55 | **0.78 / 0.78** |
-| Reading text in images (TextVQA / OCR-VQA) | 0.36 / 0.44 | **0.82 / 0.89** |
-| Charts and documents (ChartQA / DocVQA) | 0.36 / 0.40 | **0.82 / 0.72** |
-| Science diagrams (ScienceQA / AI2D) | 0.41 / 0.25 | **0.80 / 0.62** |
-| Counting (TallyQA) | 0.26 | **0.88** |
-| Sound events (ESC-50 / VGGSound) | 0.43 / 0.43 | **0.96 / 0.84** |
-| Spoken intents (SLURP 101 intents / MINDS-14, 14 languages) | 0.34 / 0.41 | **0.96 / 0.95** |
-| Audio captions (AudioCaps) | 0.46 | **0.91** |
-| Image + audio together (OmniInstruct) | 0.46 | **0.85** |
-| Zero-shot: Mini-ImageNet / MMAU / Song Describer | 0.52 / 0.29 / 0.46 | **0.79 / 0.45 / 0.68** |
+| Benchmark (chance) | laya-omni | Qwen3.5-0.8B | Qwen3.5-2B | Valen (Qwen3.5-2B) |
+|---|---:|---:|---:|---:|
+| MMBench-EN dev (0.25) | 0.63 / **21 ms** | 0.75 / 42 ms | **0.84** / 46 ms | 0.73 / 70 ms |
+| MMBench-CN dev (0.25) | 0.58 / **21 ms** | 0.75 / 42 ms | **0.82** / 45 ms | 0.73 / 70 ms |
+| MMStar (0.25) | 0.36 / **21 ms** | 0.46 / 42 ms | **0.53** / 46 ms | 0.44 / 70 ms |
+| MME, yes / no (0.5) | 0.66 / **23 ms** | 0.76 / 48 ms | **0.82** / 62 ms | 0.61 / 105 ms |
+| POPE, object hallucination (0.5) | 0.83 / **22 ms** | 0.88 / 44 ms | **0.90** / 51 ms | pending |
+| SEED-Bench, image (0.25) | 0.54 / **26 ms** | **0.72** / 61 ms | pending | pending |
+| Valen-Eval-General-5k (Valen's own set) | 0.61 / **26 ms** | 0.70 / 50 ms | **0.74** / 61 ms | **0.74** / 207 ms* |
+| OmniBench, image + audio (0.25) | 0.40 | pending (Qwen2.5-Omni-3B) | – | – |
+| MMAU test-mini, audio (~0.25) | 0.45 | pending (Qwen2.5-Omni-3B) | – | – |
+
+laya-omni answers about twice as fast as the smallest Qwen3.5 and adds audio,
+but it is 5-18 points less accurate on these benchmarks; closing that gap
+(distillation from a larger VLM) is the current work. Notes:
+
+- Qwen3.5 answers by the logit of the option letter (or Yes / No) after one
+  forward pass, with no decoding, which is the fastest way to run it.
+- Valen is [Valen-Preview-0923](https://huggingface.co/Valen-Team/Valen-Preview-0923),
+  its only public checkpoint (tuned further on Sokoban), run in its pinned
+  environment; our harness reproduces its own evaluation (0.738 vs 0.737).
+  *Measured before its fast linear-attention kernels were installed.
+  About 12% of Valen's set also appears in laya-omni's training data.
+- Latencies are medians from runs that shared the machine with other jobs; a
+  clean timing pass is pending.
+- Reproduce with `scripts/convert_bench.py` and `scripts/bench.py`; details in
+  [docs/results.md](docs/results.md#standard-benchmarks).
 
 Full tables, calibration, few-shot adaptation and what did not work:
 [docs/results.md](docs/results.md).
@@ -117,9 +133,13 @@ reasoning about what happens next (game moves) rather than what is there.
 
 ## License and credits
 
-Apache-2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE). Built on
-[Laya](https://github.com/NandhaKishorM/laya) (Convai Innovations),
+The code is Apache-2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE). The
+published weights were trained on public datasets that are not redistributed
+here, some of which are for non-commercial research only (e.g. ScienceQA,
+ESC-50, Hateful Memes), so use the weights for research and non-commercial
+purposes; for commercial use, retrain with the recipes on data whose licenses
+allow it. Dataset list and licenses: [docs/training.md](docs/training.md).
+
+Built on [Laya](https://github.com/NandhaKishorM/laya) (Convai Innovations),
 [SigLIP 2](https://huggingface.co/google/siglip2-base-patch16-256) and
-[Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B), and trained on public
-datasets listed in [docs/training.md](docs/training.md), each under its own
-license; datasets are not redistributed here.
+[Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B), all Apache-2.0.

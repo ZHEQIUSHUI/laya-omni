@@ -9,6 +9,13 @@ Prompt construction, calibration and the output schema are adapted from Laya,
 via laya-mlx (https://github.com/mizorewww/laya-mlx, Apache-2.0). The decision
 model follows Laya's DecisionModel and loads its checkpoints unchanged.
 
-Frozen feature encoders, downloaded separately and not included here:
-- SigLIP 2 (google/siglip2-base-patch16-256), Apache-2.0
-- Qwen3-ASR audio encoder (Qwen/Qwen3-ASR-0.6B), Apache-2.0
+Frozen feature encoders (not included in this repository):
+- SigLIP 2 (google/siglip2-base-patch16-256), Apache-2.0, downloaded by users.
+- Qwen3-ASR audio encoder (Qwen/Qwen3-ASR-0.6B), Apache-2.0, Copyright Alibaba
+  Cloud / Qwen Team. Its weights are redistributed unchanged, with their license,
+  in the audio_encoder/ folder of the published model (huggingface.co/zheqiushui/laya-omni).
+
+No dataset is included or redistributed; the converters in scripts/ read datasets
+that users download themselves, each under its own license (see docs/training.md).
+Benchmark comparisons run other models (Qwen3.5, Qwen2.5-Omni, Valen) as published
+by their authors; none of their code or weights is included.

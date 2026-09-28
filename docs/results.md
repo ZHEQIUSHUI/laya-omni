@@ -21,7 +21,53 @@ the same question without the image or audio: it can only use the wording of
 the question and options, so the gap is what the image or audio adds. Chance is
 0.25-0.5 depending on the number of options.
 
-## Accuracy
+## Standard benchmarks
+
+Benchmarks nobody trained on (converted by `scripts/convert_bench.py`, run by
+`scripts/bench.py`). Every model answers the same questions one at a time on
+one RTX 4090, timed from the image or audio file to the answer. Qwen3.5 sees
+the options as lettered lines and the standard instruction; its answer is the
+option letter (or Yes / No) with the highest next-token logit, one forward pass,
+no decoding. Valen is its public checkpoint Valen-Preview-0923 in its pinned
+environment (torch 2.6, transformers 5.4); through this harness it scores
+0.738 on its own set, where its evaluation script gives 0.737.
+*Laya (text only)* answers without the image or audio: near chance, so these
+sets do need the picture or clip.
+
+Accuracy / median latency (ms):
+
+| Benchmark | Laya (text only) | laya-omni | laya-omni, 256 tokens | Qwen3.5-0.8B | Qwen3.5-2B | Valen |
+|---|---:|---:|---:|---:|---:|---:|
+| MMBench-EN dev | 0.283 | 0.629 / 21 | 0.646 / 21 | 0.754 / 42 | **0.837** / 46 | 0.734 / 70 |
+| &nbsp; CircularEval | 0.129 | 0.559 | 0.584 | 0.571 | **0.722** | 0.623 |
+| MMBench-CN dev | 0.277 | 0.582 / 21 | 0.590 / 20 | 0.747 / 42 | **0.820** / 45 | 0.731 / 70 |
+| &nbsp; CircularEval | 0.104 | 0.493 | 0.514 | 0.580 | **0.710** | 0.640 |
+| MMStar | 0.249 | 0.358 / 21 | 0.365 / 20 | 0.456 / 42 | **0.528** / 46 | 0.437 / 70 |
+| MME (yes / no) | 0.503 | 0.655 / 23 | 0.664 / 22 | 0.755 / 48 | **0.815** / 62 | 0.606 / 105 |
+| &nbsp; acc+ (both questions on an image) | 0.043 | 0.349 | 0.366 | 0.525 | **0.644** | 0.212 |
+| POPE | 0.500 | 0.828 / 22 | 0.836 / 22 | 0.879 / 44 | **0.900** / 51 | – |
+| SEED-Bench (image) | 0.282 | 0.536 / 26 | 0.560 / 26 | **0.719** / 61 | – | – |
+| Valen-Eval-General-5k | 0.315 | 0.614 / 26 | 0.625 / 25 | 0.704 / 50 | **0.743** / 61 | 0.738 / 207 |
+| OmniBench (image + audio) | 0.271 | 0.398 / 70 | – | – | – | – |
+| MMAU test-mini (audio) | 0.289 | 0.448 / 30 | – | – | – | – |
+
+"–": not run yet. Qwen2.5-Omni-3B on the audio sets and a clean timing pass
+(the runs above shared the machine) are pending.
+
+- laya-omni is about twice as fast as Qwen3.5-0.8B and 5-18 points less accurate.
+  The gap is widest on fine-grained perception (SEED-Bench, MMBench-CN).
+- Valen's MME answers lean heavily to "no" (acc+ 0.21), and on MMBench it
+  scores 0.73 where its own base model, Qwen3.5-2B, scores 0.84. Its public
+  checkpoint was tuned further on Sokoban; the general checkpoint behind its
+  reported 78.4% is not released.
+- Overlap with training: 415 MMBench dev questions come from ScienceQA, which
+  laya-omni trained on; without them laya-omni scores 0.610 on MMBench-EN
+  (Qwen3.5 and Valen change by under 0.01). Valen-Eval-General-5k draws its
+  questions from the training splits of VQAv2, GQA, TextVQA, DocVQA and others;
+  611 of its 5000 questions (same image and question) are in laya-omni's
+  training data, another 206 share only the image (`scripts/check_overlap.py`).
+
+## In-distribution test splits
 
 | Set | Laya (text only) | v1 | **v2**, 64 tokens | v2, 256 tokens | NLL (v2, 64) |
 |---|---:|---:|---:|---:|---:|
@@ -153,3 +199,4 @@ many epochs), so few-shot use needs early stopping and a calibration pass.
 | Two image encoders (SigLIP 2 + Qwen3.5 vision) | Qwen3.5's tower is better at text and charts, SigLIP 2 at photos and diagrams; the mean was a tie (0.59 vs 0.58) and running both doubles the image cost, so laya-omni keeps SigLIP 2. |
 | Learning rate 1e-3 / LoRA 2e-4 on the full mixture | One seed stopped using the images for AI2D, ChartQA and ScienceQA in its first epoch and never recovered (AI2D 0.44 vs 0.67); another seed was fine. The formal recipe uses 5e-4 / 1e-4, 1000 warm-up steps, and probes every 2000 steps. |
 | FigureQA (synthetic charts, 1.3M questions) | Chance at 64 and at 256 tokens; dropped from training. |
+| A larger image encoder (SigLIP 2 so400m/16 at 256 px) | Same short from-scratch run as SigLIP 2 base: MMBench-EN 0.534 vs 0.514, SEED 0.423 vs 0.444, MMStar 0.307 vs 0.307, POPE 0.773 vs 0.765. No gain overall, 15% slower; the encoder is not the bottleneck. (Base at 384 px diverged in the same run and is not conclusive.) |

@@ -50,6 +50,14 @@ Datasets are not redistributed; only the converters ship.
 | gijs/avqa-processed | all | audio questions |
 | timm/mini-imagenet (test), lmms-lab-audio/mmau (test_mini), renumics/song-describer-dataset | as listed | zero-shot evaluation |
 
+**Licenses.** Datasets are not redistributed. They carry their own terms, and
+some are for non-commercial research only, including ScienceQA (CC BY-NC-SA 4.0),
+ESC-50 (CC BY-NC 3.0) and Hateful Memes (research license); images in COCO-based,
+CC3M and similar sets belong to their owners. Weights trained on this mixture
+are therefore released for research and non-commercial use. For commercial use,
+retrain with the same recipes on data whose licenses allow it (the code is
+Apache-2.0).
+
 Convert (image files and audio clips are written next to each jsonl):
 
 ```bash

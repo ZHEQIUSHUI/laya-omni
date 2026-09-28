@@ -11,20 +11,26 @@ laya-omni 让状态里还可以带上图片、音频，或者两者都有；除�
 
 ## 能做什么
 
-`formal-v2` 在从未训练过的测试题上的准确率，对照的是同样的题目交给不看图、不听音的原版 Laya：
+在标准测试集上和小尺寸 VLM 对比：同一份题、同一张 RTX 4090、一次问一题，计时从读入图片或音频文件到给出答案。每格为「准确率 / 每题耗时中位数」：
 
-| | 原版 Laya（只看文字） | laya-omni |
-|---|---:|---:|
-| 照片问答（VQAv2 / GQA） | 0.45 / 0.55 | **0.78 / 0.78** |
-| 读图中文字（TextVQA / OCR-VQA） | 0.36 / 0.44 | **0.82 / 0.89** |
-| 图表与文档（ChartQA / DocVQA） | 0.36 / 0.40 | **0.82 / 0.72** |
-| 科学图示（ScienceQA / AI2D） | 0.41 / 0.25 | **0.80 / 0.62** |
-| 计数（TallyQA） | 0.26 | **0.88** |
-| 声音事件（ESC-50 / VGGSound） | 0.43 / 0.43 | **0.96 / 0.84** |
-| 语音意图（SLURP 101 种 / MINDS-14 含中文等 14 种语言） | 0.34 / 0.41 | **0.96 / 0.95** |
-| 音频描述匹配（AudioCaps） | 0.46 | **0.91** |
-| 图像 + 音频同时输入（OmniInstruct） | 0.46 | **0.85** |
-| 零样本：Mini-ImageNet / MMAU / Song Describer | 0.52 / 0.29 / 0.46 | **0.79 / 0.45 / 0.68** |
+| 测试集（随机水平） | laya-omni | Qwen3.5-0.8B | Qwen3.5-2B | Valen（Qwen3.5-2B） |
+|---|---:|---:|---:|---:|
+| MMBench 英文 dev（0.25） | 0.63 / **21 ms** | 0.75 / 42 ms | **0.84** / 46 ms | 0.73 / 70 ms |
+| MMBench 中文 dev（0.25） | 0.58 / **21 ms** | 0.75 / 42 ms | **0.82** / 45 ms | 0.73 / 70 ms |
+| MMStar（0.25） | 0.36 / **21 ms** | 0.46 / 42 ms | **0.53** / 46 ms | 0.44 / 70 ms |
+| MME，是非题（0.5） | 0.66 / **23 ms** | 0.76 / 48 ms | **0.82** / 62 ms | 0.61 / 105 ms |
+| POPE，物体幻觉（0.5） | 0.83 / **22 ms** | 0.88 / 44 ms | **0.90** / 51 ms | 待测 |
+| SEED-Bench 图像（0.25） | 0.54 / **26 ms** | **0.72** / 61 ms | 待测 | 待测 |
+| Valen-Eval-General-5k（Valen 自己的评测集） | 0.61 / **26 ms** | 0.70 / 50 ms | **0.74** / 61 ms | **0.74** / 207 ms* |
+| OmniBench，图像 + 音频（0.25） | 0.40 | 待测（Qwen2.5-Omni-3B） | – | – |
+| MMAU test-mini，音频（约 0.25） | 0.45 | 待测（Qwen2.5-Omni-3B） | – | – |
+
+laya-omni 的速度约为最小的 Qwen3.5 的两倍，并且支持音频；但在这些测试集上准确率低 5–18 个点。缩小这个差距（用更大的 VLM 做蒸馏）是目前正在做的事。说明：
+
+- Qwen3.5 的答题方式：一次前向后取选项字母（或 Yes / No）的 logit，不做生成解码，这是它最快的用法。
+- Valen 用的是它唯一公开的检查点 [Valen-Preview-0923](https://huggingface.co/Valen-Team/Valen-Preview-0923)（在推箱子任务上继续训练过），在它锁定版本的原版环境里运行；我们的评测脚本复现了它官方评测的结果（0.738 对 0.737）。*这一格是它装上线性注意力加速内核之前测的。Valen 评测集里约 12% 的题目也出现在 laya-omni 的训练数据中。
+- 耗时是和其他任务共用机器时测的中位数，干净的单独测速还没做。
+- 复现：`scripts/convert_bench.py` 和 `scripts/bench.py`，细节见 [docs/results.md](docs/results.md#standard-benchmarks)。
 
 完整结果、温度校准、少样本适配，以及试过但行不通的方案：[docs/results.md](docs/results.md)。
 
@@ -104,6 +110,6 @@ python scripts/finetune.py --folders my_task/ --question "这个零件有缺陷�
 
 ## 许可与致谢
 
-Apache-2.0，见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。基于 [Laya](https://github.com/NandhaKishorM/laya)（Convai Innovations）、
-[SigLIP 2](https://huggingface.co/google/siglip2-base-patch16-256) 与 [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B)，
-训练数据为 [docs/training.md](docs/training.md) 所列的公开数据集（各自遵循其许可证），本仓库不分发数据集。
+代码采用 Apache-2.0，见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。已发布的权重由公开数据集训练而成（数据集本身不在本仓库分发），其中部分数据集仅限非商业研究使用（如 ScienceQA、ESC-50、Hateful Memes），因此权重请用于研究与非商业用途；如需商用，请用本仓库的训练配方在许可允许商用的数据上重新训练。数据集清单与许可说明见 [docs/training.md](docs/training.md)。
+
+基于 [Laya](https://github.com/NandhaKishorM/laya)（Convai Innovations）、[SigLIP 2](https://huggingface.co/google/siglip2-base-patch16-256) 与 [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B)，均为 Apache-2.0。
