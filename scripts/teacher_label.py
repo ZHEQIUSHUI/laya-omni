@@ -64,7 +64,7 @@ def audio_url(path, max_seconds):
     """A clip as a 16 kHz mono WAV data URL (decoded with laya_omni's loader, so any format works)."""
     import soundfile as sf
 
-    from laya_omni.encoders import load_audio
+    from laya_omni.audio import load_audio
 
     wav = load_audio(path, 16000)[: int(max_seconds * 16000)]
     buf = io.BytesIO()
