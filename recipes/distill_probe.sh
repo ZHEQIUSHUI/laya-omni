@@ -2,7 +2,8 @@
 # Does distilling a large VLM teacher help? Two runs continue formal-v2 for one epoch on
 # the same mixture, one with the teacher's option probabilities (scripts/teacher_label.py
 # output in $W/data/teacher) and one without.
-# Usage: W=<work dir> bash recipes/distill_probe.sh <control|distill> <gpu>
+# Usage: W=<work dir> bash recipes/distill_probe.sh <control|distill|name> <gpu>
+# EXTRA="--jsonl a.jsonl ..." adds sources (e.g. the COCO spatial questions) to the mixture.
 set -e
 cd "$(dirname "$0")/.."
 W=${W:-$HOME/laya-omni-work}; D=$W/data
@@ -13,6 +14,7 @@ T=""
 for s in $IMG; do T="$T --jsonl $D/cauldron/$s.jsonl"; done
 T="$T --jsonl $D/gqa/gqa.jsonl --jsonl $D/omni/omniinstruct.jsonl --jsonl $D/captions/cc3m.jsonl"
 for a in $AUD; do T="$T --jsonl $D/audio/$a.jsonl"; done
+T="$T ${EXTRA:-}"
 EVAL="--holdout-jsonl $D/cauldron/tqa.jsonl --holdout-jsonl $D/cauldron/vqarad.jsonl --holdout-jsonl $D/audio/gtzan.jsonl"
 EVAL="$EVAL --holdout-jsonl $D/eval/imagenet.jsonl --holdout-jsonl $D/eval/mmau.jsonl --holdout-jsonl $D/eval/songdescriber.jsonl"
 TEACH=""
