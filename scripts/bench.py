@@ -51,7 +51,7 @@ class LayaOmni:
 
         self.omni = Omni.load(args.fusion, laya=args.laya, image_encoder=args.image_encoder or None,
                               audio_encoder=args.audio_encoder or None)
-        self.text_only, self.detail = args.text_only, args.detail
+        self.text_only, self.detail, self.tiles = args.text_only, args.detail, args.tiles
 
     def answer(self, row):
         q = row["question"]
@@ -62,7 +62,7 @@ class LayaOmni:
                 kw["image"] = imgs if len(imgs) > 1 else imgs[0]
             if row.get("audio"):
                 kw["audio"] = row["audio"]
-        out = self.omni.predict(row["state"], {"q": q}, detail=self.detail, **kw)["answers"]["q"]
+        out = self.omni.predict(row["state"], {"q": q}, detail=self.detail, tiles=self.tiles, **kw)["answers"]["q"]
         if q["type"] == "noul":
             return int(out["noul"] >= 0.5)
         return q["criteria"].index(out["choice"])
@@ -209,6 +209,7 @@ def main():
     ap.add_argument("--image-encoder", default="")
     ap.add_argument("--audio-encoder", default="")
     ap.add_argument("--detail", action="store_true", help="laya-omni: 256 image tokens")
+    ap.add_argument("--tiles", type=int, default=None, help="laya-omni: whole image + tiles x tiles crops (default: as trained)")
     ap.add_argument("--qwen")
     ap.add_argument("--valen", help="Valen checkpoint directory")
     ap.add_argument("--valen-base", help="its Qwen3.5 base model directory")

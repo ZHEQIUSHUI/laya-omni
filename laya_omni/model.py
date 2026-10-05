@@ -23,6 +23,8 @@ With no image and no audio nothing is inserted and the output is the original
 Laya output bit for bit.
 """
 
+import copy
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -86,8 +88,12 @@ class OmniFusion(nn.Module):
     """
 
     def __init__(self, dims, in_dims, max_items=8, max_frames=1024, lora_rank=0, lora_alpha=None, lora_layers=None,
-                 image_grid=0):
+                 image_grid=0, twin=False):
         super().__init__()
+        # twin: a trainable copy of Laya's encoder and decision head reads every row that
+        # carries an image or clip (full fine-tuning); text-only rows keep the original Laya.
+        self.twin = twin
+        self.twin_encoder = self.twin_head = None
         self.in_dims = dict(in_dims)
         self.max_items = max_items
         self.lora_rank = lora_rank
@@ -159,6 +165,8 @@ class OmniFusion(nn.Module):
         for h in self._hooks:
             h.remove()
         self._hooks = []
+        if self.twin and self.twin_encoder is None:
+            self.make_twin(model)
         if not self.lora_rank:
             return
         names = self.lora_layers or [
@@ -175,6 +183,26 @@ class OmniFusion(nn.Module):
                     linear.weight.device
                 )
             self._hooks.append(linear.register_forward_hook(self._hook(self.lora[key])))
+
+    def make_twin(self, model):
+        """Copy Laya's encoder and head for modality rows, with any LoRA deltas merged in,
+        so the copy starts out computing exactly what the LoRA-adapted model did."""
+        enc, head = copy.deepcopy(model.encoder), copy.deepcopy(model.head)
+        for m in list(enc.modules()) + list(head.modules()):
+            m._forward_hooks.clear()
+        # modality rows arrive as embeddings (splice), so the copy needs no vocabulary
+        enc.embeddings.tok_embeddings = nn.Embedding(1, enc.config.hidden_size)
+        with torch.no_grad():
+            for name in self.lora_layers:
+                key = name.replace(".", "__")
+                if key not in self.lora:
+                    continue
+                root, rest = name.split(".", 1)
+                linear = dict((enc if root == "encoder" else head).named_modules())[rest]
+                lora = self.lora[key]
+                linear.weight += ((lora.B @ lora.A) * lora.scale).to(linear.weight.dtype)
+        self.twin_encoder, self.twin_head = enc, head
+        self.twin = True
 
     def _hook(self, lora):
         def hook(module, inputs, output):
@@ -234,17 +262,22 @@ class DecisionModel(nn.Module):
         """modalities: optional {"image"|"audio": (feats, mask, present)}; None or {} = pure Laya."""
         fused = bool(modalities) and self.fusion is not None
         try:
+            head = self.head
             if fused:
                 n_before = attention_mask.sum(1)
                 embeds, attention_mask, marker_pos = self.splice(input_ids, attention_mask, marker_pos, modalities)
-                # LoRA deltas apply only to rows that actually got modality tokens.
-                self.fusion.row_mask = (attention_mask.sum(1) > n_before).float()
-                h = self.encoder(inputs_embeds=embeds, attention_mask=attention_mask).last_hidden_state
+                if self.fusion.twin_encoder is not None:  # full fine-tuned copy for modality requests
+                    h = self.fusion.twin_encoder(inputs_embeds=embeds, attention_mask=attention_mask).last_hidden_state
+                    head = self.fusion.twin_head
+                else:
+                    # LoRA deltas apply only to rows that actually got modality tokens.
+                    self.fusion.row_mask = (attention_mask.sum(1) > n_before).float()
+                    h = self.encoder(inputs_embeds=embeds, attention_mask=attention_mask).last_hidden_state
             else:
                 h = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
             h = h + self.type_emb(qtype)[:, None, :]
             pad = ~attention_mask.bool()
-            for layer in self.head.layers:
+            for layer in head.layers:
                 h = layer(h, pad)
         finally:
             if fused:

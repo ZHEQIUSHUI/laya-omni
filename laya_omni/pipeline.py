@@ -22,7 +22,7 @@ import numpy as np
 import torch
 
 from .agent import Agent
-from .data import pool_tokens
+from .data import pool_tokens, tile_views
 
 
 def _image(x):
@@ -42,10 +42,11 @@ def _audio(x, sampling_rate):
 
 
 class Omni:
-    def __init__(self, agent, image_encoder=None, audio_encoder=None):
+    def __init__(self, agent, image_encoder=None, audio_encoder=None, tiles=0):
         self.agent = agent
         self.image_encoder = image_encoder
         self.audio_encoder = audio_encoder
+        self.tiles = tiles  # the fusion was trained to see single images as whole + tiles x tiles crops
 
     @classmethod
     def load(cls, fusion, laya, image_encoder=None, audio_encoder=None, device=None, dtype="float32"):
@@ -60,10 +61,14 @@ class Omni:
             img = ImageEncoder(image_encoder or cfg.get("image_encoder"), device=str(agent.device), pool=1)
         if "audio" in dims and audio_encoder:
             aud = AudioEncoder(audio_encoder, device=str(agent.device))
-        return cls(agent, img, aud)
+        return cls(agent, img, aud, tiles=cfg.get("tiles", 0))
 
-    def encode_image(self, image, detail=False):
-        """(tokens, D) features for one image, or a list of them."""
+    def encode_image(self, image, detail=False, tiles=0):
+        """(tokens, D) features for one image, or a list of them. With tiles > 1 a single
+        image is encoded as the whole image plus tiles x tiles crops (a list of views)."""
+        if tiles > 1 and not isinstance(image, (list, tuple)):
+            image = tile_views(_image(image), tiles)
+            detail = False  # 64 tokens per view keeps the row within Laya's length
         items = image if isinstance(image, (list, tuple)) else [image]
         with torch.inference_mode():
             h = self.image_encoder([_image(x) for x in items])
@@ -76,12 +81,13 @@ class Omni:
         feats = [f.float() for f in self.audio_encoder([_audio(x, self.audio_encoder.sampling_rate) for x in items])]
         return feats if isinstance(audio, (list, tuple)) else feats[0]
 
-    def predict(self, state, questions, *, image=None, audio=None, detail=False):
+    def predict(self, state, questions, *, image=None, audio=None, detail=False, tiles=None):
         """Laya's output schema. image: path, PIL image or list; audio: path, 16 kHz array or list."""
         if image is not None and self.image_encoder is None:
             raise ValueError("This fusion has no image encoder")
         if audio is not None and self.audio_encoder is None:
             raise ValueError("This fusion was loaded without an audio encoder")
-        img = self.encode_image(image, detail) if image is not None else None
+        tiles = self.tiles if tiles is None else tiles
+        img = self.encode_image(image, detail, tiles) if image is not None else None
         aud = self.encode_audio(audio) if audio is not None else None
         return self.agent.predict(state, questions, image=img, audio=aud)

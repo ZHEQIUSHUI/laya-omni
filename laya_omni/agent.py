@@ -130,6 +130,7 @@ class Agent:
             lora_alpha=self.fusion_cfg.get("lora_alpha"),
             lora_layers=self.fusion_cfg.get("lora_layers"),
             image_grid=self.fusion_cfg.get("image_grid", 0),
+            twin=self.fusion_cfg.get("twin", False),
         )
         self.model.fusion = fusion  # attaching creates the LoRA modules the weights fill
         fusion.load_state_dict(load_file(path / "fusion.safetensors"), strict=True)

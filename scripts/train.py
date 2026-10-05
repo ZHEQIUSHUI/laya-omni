@@ -82,9 +82,9 @@ def build_sources(args, store, split):
     return [s for s in sources if (s.rows if hasattr(s, "rows") else True)]
 
 
-def loader(agent, store, samples, batch_size, workers, image_encoder=None):
+def loader(agent, store, samples, batch_size, workers, image_encoder=None, tiles=0):
     size = image_encoder.image_size if image_encoder is not None else 256
-    data = Batches(samples, batch_size, agent.tok, agent.max_len, agent.head_max_len, store, image_size=size)
+    data = Batches(samples, batch_size, agent.tok, agent.max_len, agent.head_max_len, store, image_size=size, tiles=tiles)
     return torch.utils.data.DataLoader(
         data, batch_size=None, shuffle=False, num_workers=workers, prefetch_factor=4 if workers else None,
         persistent_workers=False,
@@ -105,7 +105,7 @@ def evaluate_sources(agent, store, sources, args, image_encoder, image_tokens, o
     names = [s["source"] for s in samples]
     stats, seen = {}, 0
     with torch.no_grad():
-        for cpu in loader(agent, store, samples, batch_size, args.workers, image_encoder):
+        for cpu in loader(agent, store, samples, batch_size, args.workers, image_encoder, args.tiles):
             b, mods, y = to_device(*cpu, args.device, image_encoder, image_tokens)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 runs = {"with": model(**b, modalities=mods)[0], "without": model(**b)[0]}
@@ -145,6 +145,11 @@ def main():
     ap.add_argument("--image-encoder", default="", help="SigLIP checkpoint for --raw-images")
     ap.add_argument("--image-tokens", default="64", help="token counts per image, drawn per batch (e.g. 64,256)")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--twin", action="store_true",
+                    help="fully fine-tune a copy of Laya's encoder and head for modality rows (text rows keep Laya)")
+    ap.add_argument("--twin-lr", type=float, default=1e-5)
+    ap.add_argument("--tiles", type=int, default=0,
+                    help="also show each single image as tiles x tiles crops (2: whole image + 4 crops)")
     ap.add_argument("--image-grid", type=int, default=16, help="2-D position grid for image tokens (0: frame indices)")
     ap.add_argument("--games", default="", help="data_dir:game1,game2 (trained on)")
     ap.add_argument("--holdout-games", default="", help="games evaluated zero-shot, never trained on")
@@ -214,6 +219,9 @@ def main():
 
         model.fusion.load_state_dict(load_file(Path(args.init) / "fusion.safetensors", device=args.device), strict=True)
         print(f"initialised the fusion from {args.init}") if rank == 0 else None
+    if args.twin and model.fusion.twin_encoder is None:  # start the copy from the (LoRA-adapted) model
+        model.fusion.make_twin(model)
+        model.fusion.to(args.device)
     for name, p in model.named_parameters():
         p.requires_grad_(name.startswith("fusion."))
     params = [p for p in model.parameters() if p.requires_grad]
@@ -224,9 +232,15 @@ def main():
     per_epoch = len(mix(train, seeded(0), args.cap or None, args.weights))
     steps = args.epochs * math.ceil(per_epoch / (args.batch * args.accum * world))
     warm = max(1, min(args.warmup, steps // 10))
+    if model.fusion.twin_encoder is not None:  # LoRA is merged into the copy and no longer used
+        for p in model.fusion.lora.parameters():
+            p.requires_grad_(False)
+    is_twin = lambda n: n.startswith(("fusion.twin_encoder.", "fusion.twin_head."))
     lora = [p for n, p in model.named_parameters() if p.requires_grad and n.startswith("fusion.lora.")]
-    rest = [p for n, p in model.named_parameters() if p.requires_grad and not n.startswith("fusion.lora.")]
+    twin = [p for n, p in model.named_parameters() if p.requires_grad and is_twin(n)]
+    rest = [p for n, p in model.named_parameters() if p.requires_grad and not n.startswith("fusion.lora.") and not is_twin(n)]
     groups = [{"params": rest, "lr": args.lr}] + ([{"params": lora, "lr": args.lora_lr}] if lora else [])
+    groups += [{"params": twin, "lr": args.twin_lr}] if twin else []
     opt = torch.optim.AdamW(groups, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1, (s + 1) / warm) * 0.5 * (1 + math.cos(math.pi * min(1, s / steps)))
@@ -240,6 +254,8 @@ def main():
         "max_items": model.fusion.max_items,
         "max_frames": model.fusion.frame_emb.shape[0],
         "image_grid": grid,
+        "tiles": args.tiles,
+        "twin": model.fusion.twin_encoder is not None,
         "image_tokens": args.tokens,
         "image_encoder": args.image_encoder,
         "lora_rank": model.fusion.lora_rank,
@@ -262,7 +278,7 @@ def main():
         per_rank = len(samples) // (args.batch * world) * args.batch  # equal batch counts on every rank
         mine = [x for i in range(0, per_rank * world, args.batch) if (i // args.batch) % world == rank
                 for x in samples[i : i + args.batch]]
-        for cpu in loader(agent, store, mine, args.batch, args.workers, image_encoder):
+        for cpu in loader(agent, store, mine, args.batch, args.workers, image_encoder, args.tiles):
             b, mods, y = to_device(*cpu, args.device, image_encoder, token_rng.choice(args.tokens))
             teacher, teacher_mask = b.pop("teacher", None), b.pop("teacher_mask", None)
             with torch.autocast("cuda", dtype=torch.bfloat16):

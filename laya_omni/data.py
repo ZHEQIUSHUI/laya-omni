@@ -179,11 +179,26 @@ RAW = "raw:"
 IMAGE_SIZE = 256
 
 
-def load_pixels(path, size=IMAGE_SIZE):
-    """SigLIP preprocessing without the processor: bilinear resize, [-1, 1] (3, size, size)."""
+def tile_views(img, grid):
+    """An image as [whole image, grid x grid crops in reading order] (PIL images), so the
+    frozen encoder sees detail at its fixed input size. grid 0 or 1: just the image."""
+    if grid <= 1:
+        return [img]
+    w, h = img.size
+    crops = [img.crop((c * w // grid, r * h // grid, (c + 1) * w // grid, (r + 1) * h // grid))
+             for r in range(grid) for c in range(grid)]
+    return [img] + crops
+
+
+def load_pixels(path, size=IMAGE_SIZE, view=0, grid=0):
+    """SigLIP preprocessing without the processor: bilinear resize, [-1, 1] (3, size, size).
+    view: 0 for the whole image, k for the k-th crop of tile_views(image, grid)."""
     from PIL import Image
 
-    img = Image.open(path).convert("RGB").resize((size, size), Image.BILINEAR)
+    img = Image.open(path).convert("RGB")
+    if view:
+        img = tile_views(img, grid)[view]
+    img = img.resize((size, size), Image.BILINEAR)
     x = np.asarray(img, dtype=np.float32) / 255.0
     return torch.from_numpy((x - 0.5) / 0.5).permute(2, 0, 1)
 
@@ -193,8 +208,8 @@ class Batches(torch.utils.data.Dataset):
     tokenised text, cached audio features, and decoded image pixels."""
 
     def __init__(self, samples, batch_size, tok, max_len, head_max_len, store, modalities=("image", "audio"),
-                 image_size=IMAGE_SIZE):
-        self.image_size = image_size
+                 image_size=IMAGE_SIZE, tiles=0):
+        self.image_size, self.tiles = image_size, tiles
         self.chunks = [samples[i : i + batch_size] for i in range(0, len(samples), batch_size)]
         self.tok, self.max_len, self.head_max_len = tok, max_len, head_max_len
         self.store, self.modalities = store, modalities
@@ -215,12 +230,15 @@ class Batches(torch.utils.data.Dataset):
                 continue
             items_m = [[] if r is None else (r if isinstance(r, list) else [r]) for r in refs]
             if any(x[0].startswith(RAW) for it in items_m for x in it):
-                n = max(len(it) for it in items_m)
+                # a single image becomes the whole view plus tiles x tiles crops; several images stay as they are
+                views = [[(ref, v) for ref in it for v in range(1 + self.tiles**2 if self.tiles > 1 and len(it) == 1 else 1)]
+                         for it in items_m]
+                n = max(len(v) for v in views)
                 index = torch.full((len(samples), n), -1, dtype=torch.long)
-                for b, it in enumerate(items_m):
-                    for j, (store_name, rel) in enumerate(it):
+                for b, it in enumerate(views):
+                    for j, ((store_name, rel), v) in enumerate(it):
                         index[b, j] = len(pixels)
-                        pixels.append(load_pixels(Path(store_name[len(RAW) :]) / rel, self.image_size))
+                        pixels.append(load_pixels(Path(store_name[len(RAW) :]) / rel, self.image_size, v, self.tiles))
             else:
                 cached[m] = items_m
         feats = {m: stack_cached(self.store, it) for m, it in cached.items()}
