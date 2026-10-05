@@ -20,7 +20,7 @@ base_model:
   - Qwen/Qwen3-ASR-0.6B
 ---
 
-# laya-omni (formal-v2)
+# laya-omni (formal-v3)
 
 [Laya](https://github.com/NandhaKishorM/laya) answers typed decisions (choose
 one option, give a score, answer yes/no) with calibrated probabilities.
@@ -60,29 +60,35 @@ omni.predict("Audio clip.", {
 }, audio="call.wav")
 ```
 
-Several images: `image=[a, b]`. `detail=True` uses 256 image tokens instead of
-64 (better for text, documents and spatial questions). One question with an
-image or a 10 s clip takes 30-120 ms on an RTX 4090, encoders included.
+Several images: `image=[a, b]`. Images use 256 tokens by default (`detail=False`:
+64). At load time the LoRA deltas are folded into a copy of Laya's encoder for
+image / audio requests (same outputs, about a quarter faster; `merge=False` to
+skip). One question with an image takes 14-20 ms on an RTX 4090, encoders included.
+
+The previous release is kept under the tag `formal-v2`
+(`hf download zheqiushui/laya-omni --revision formal-v2`).
 
 ## Results
 
 Standard benchmarks, same questions, one RTX 4090, one question at a time from
 the image or audio file to the answer (accuracy / median latency):
 
-| Benchmark | laya-omni | Qwen3.5-0.8B | Qwen3.5-2B | Valen-Preview-0923 |
-|---|---:|---:|---:|---:|
-| MMBench-EN dev | 0.63 / **21 ms** | 0.75 / 42 ms | **0.84** / 46 ms | 0.73 / 70 ms |
-| MMBench-CN dev | 0.58 / **21 ms** | 0.75 / 42 ms | **0.82** / 45 ms | 0.73 / 70 ms |
-| MMStar | 0.36 / **21 ms** | 0.46 / 42 ms | **0.53** / 46 ms | 0.44 / 70 ms |
-| MME (yes / no) | 0.66 / **23 ms** | 0.76 / 48 ms | **0.82** / 62 ms | 0.61 / 105 ms |
-| POPE | 0.83 / **22 ms** | 0.88 / 44 ms | **0.90** / 51 ms | – |
-| SEED-Bench (image) | 0.54 / **26 ms** | **0.72** / 61 ms | – | – |
-| OmniBench (image + audio) | 0.40 | – | – | – |
-| MMAU test-mini (audio) | 0.45 | – | – | – |
+| Benchmark | laya-omni | Qwen3.5-0.8B | Qwen3.5-2B | Valen-Preview-0923 | Qwen2.5-Omni-3B |
+|---|---:|---:|---:|---:|---:|
+| MMBench-EN dev | 0.66 / **14 ms** | 0.75 / 42 ms | **0.84** / 46 ms | 0.73 / 70 ms | – |
+| MMBench-CN dev | 0.60 / **14 ms** | 0.75 / 42 ms | **0.82** / 45 ms | 0.73 / 70 ms | – |
+| MMStar | 0.37 / **14 ms** | 0.46 / 42 ms | **0.53** / 46 ms | 0.44 / 70 ms | – |
+| MME (yes / no) | 0.68 / **17 ms** | 0.76 / 48 ms | **0.82** / 62 ms | 0.61 / 105 ms | – |
+| POPE | 0.84 / **16 ms** | 0.88 / 44 ms | **0.90** / 51 ms | 0.82 / 88 ms | – |
+| SEED-Bench (image) | 0.57 / **20 ms** | 0.72 / 61 ms | **0.77** / 82 ms | 0.66 / 222 ms | – |
+| OmniBench (image + audio) | 0.38 / **50 ms** | – | – | – | **0.42** / 321 ms |
+| MMAU test-mini (audio) | 0.45 / **20 ms** | – | – | – | **0.67** / 91 ms |
 
-About twice as fast as the smallest Qwen3.5, with audio input, and 5-18 points
-less accurate; distillation from a larger VLM is in progress. Protocol,
-CircularEval, overlap checks and the in-distribution test splits:
+About three times as fast as the smallest Qwen3.5 and 4-15 points less accurate
+on the image benchmarks; Qwen2.5-Omni-3B is well ahead on audio. On held-out COCO
+images it tells where an object is (0.85, 4 options), left / right / above
+(0.85), which is bigger (0.94) and which objects are present (0.96). Protocol,
+CircularEval, overlap checks and ablations:
 [docs/results.md](https://github.com/ZHEQIUSHUI/laya-omni/blob/main/docs/results.md).
 
 ## Adapting to a new scenario
@@ -102,7 +108,9 @@ calibrated per modality and question type (`temperature_by_modality` in
 
 - Code: Apache-2.0 ([repository](https://github.com/ZHEQIUSHUI/laya-omni)).
 - `fusion.safetensors`: trained on public datasets that are not redistributed,
-  some of which are for non-commercial research only (e.g. ScienceQA
+  plus questions generated from COCO 2017 boxes (CC BY 4.0) and option
+  probabilities from Qwen3.8-27B (Apache-2.0); some datasets are for
+  non-commercial research only (e.g. ScienceQA
   CC BY-NC-SA 4.0, ESC-50 CC BY-NC 3.0, Hateful Memes research license). Use it
   for research and non-commercial purposes; for commercial use, retrain with the
   repository's recipes on data whose licenses allow it.

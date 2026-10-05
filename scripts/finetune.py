@@ -9,7 +9,7 @@ Task data, any of:
   --csv FILE        columns: file (image or audio path), label; optional: question, state
   --jsonl FILE      laya-omni rows (see docs/finetune.md), with or without "split"
 
-    python scripts/finetune.py --base runs/formal-v2 --laya models/laya-multilingual \\
+    python scripts/finetune.py --base runs/formal-v3 --laya models/laya-multilingual \\
         --image-encoder models/siglip2-base-patch16-256 \\
         --folders my_photos/ --question "Is the part defective?" --out runs/my-scenario
 

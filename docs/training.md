@@ -1,4 +1,4 @@
-# Reproducing formal-v2
+# Reproducing formal-v3
 
 Everything below ran on one machine with two RTX 4090s (24 GB), 128 CPU cores
 and about 1 TB of free disk. Paths use `W=~/laya-omni-work` for downloads,
@@ -53,7 +53,9 @@ Datasets are not redistributed; only the converters ship.
 **Licenses.** Datasets are not redistributed. They carry their own terms, and
 some are for non-commercial research only, including ScienceQA (CC BY-NC-SA 4.0),
 ESC-50 (CC BY-NC 3.0) and Hateful Memes (research license); images in COCO-based,
-CC3M and similar sets belong to their owners. Weights trained on this mixture
+CC3M and similar sets belong to their owners. formal-v3 also uses COCO 2017
+instance annotations (CC BY 4.0) and option probabilities from Qwen3.8-27B
+(Apache-2.0). Weights trained on this mixture
 are therefore released for research and non-commercial use. For commercial use,
 retrain with the same recipes on data whose licenses allow it (the code is
 Apache-2.0).
@@ -80,6 +82,20 @@ python scripts/convert_vqa.py imagenet <mini-imagenet test parquet dir> --out $O
 Mini-ImageNet's class names come from timm's synset table
 (`timm/data/_info/imagenet_synset_to_lemma.txt`).
 
+formal-v3 adds questions generated from COCO 2017 instance boxes (where an
+object is, left / right / above of another, which is bigger, which objects are
+in the image), and soft labels from a larger VLM:
+
+```bash
+# COCO 2017 (also on ModelScope as PAI/COCO2017): annotations_trainval2017.zip, train2017.zip
+python scripts/make_spatial.py --annotations instances_train2017.json \
+    --images $O/coco_spatial/train2017 --out $O/coco_spatial   # extract train2017 there
+# optional: option probabilities from a VLM teacher behind vLLM (Qwen3.8-27B here),
+# 7000 training questions per image set, written to $O/teacher/<set>.jsonl
+python scripts/teacher_label.py --data $O/cauldron/vqav2.jsonl --out $O/teacher/vqav2.jsonl \
+    --server http://<host>:8333/v1 --limit 7000
+```
+
 Audio features are cached once (images are encoded during training):
 
 ```bash
@@ -94,6 +110,7 @@ done
 ```bash
 W=$W bash recipes/formal_v1.sh all      # stage 1 then stage 2, both on two GPUs
 W=$W bash recipes/formal_v2.sh          # continues formal-v1 (adds CLEVR and FSD50K)
+W=$W bash recipes/formal_v3.sh          # continues formal-v2 (COCO questions, teacher soft labels)
 ```
 
 On consumer GPUs without peer-to-peer access (RTX 4090), `train.py` sets
@@ -104,7 +121,7 @@ on is a run worth restarting.
 ## 5. Evaluate and calibrate
 
 ```bash
-python scripts/evaluate.py --laya $W/models/laya-multilingual --fusion $W/runs/formal-v2 \
+python scripts/evaluate.py --laya $W/models/laya-multilingual --fusion $W/runs/formal-v3 \
     --image-encoder $W/models/siglip2-base-patch16-256 --audio-features $W/cache/qwen3-asr \
     --jsonl <each training set> --holdout <tqa, vqarad, gtzan, imagenet, mmau, songdescriber> \
     --tokens 64,256 --limit 1000 --calibrate

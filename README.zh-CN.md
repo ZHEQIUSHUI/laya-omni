@@ -11,25 +11,25 @@ laya-omni 让状态里还可以带上图片、音频，或者两者都有；除�
 
 ## 能做什么
 
-在标准测试集上和小尺寸 VLM 对比：同一份题、同一张 RTX 4090、一次问一题，计时从读入图片或音频文件到给出答案。每格为「准确率 / 每题耗时中位数」：
+在标准测试集上和小尺寸 VLM 对比：同一份题、同一张 RTX 4090、一次问一题，计时从读入图片或音频文件到给出答案。每格为「准确率 / 每题耗时中位数」（`formal-v3`，256 个图像 token）：
 
-| 测试集（随机水平） | laya-omni | Qwen3.5-0.8B | Qwen3.5-2B | Valen（Qwen3.5-2B） |
-|---|---:|---:|---:|---:|
-| MMBench 英文 dev（0.25） | 0.63 / **21 ms** | 0.75 / 42 ms | **0.84** / 46 ms | 0.73 / 70 ms |
-| MMBench 中文 dev（0.25） | 0.58 / **21 ms** | 0.75 / 42 ms | **0.82** / 45 ms | 0.73 / 70 ms |
-| MMStar（0.25） | 0.36 / **21 ms** | 0.46 / 42 ms | **0.53** / 46 ms | 0.44 / 70 ms |
-| MME，是非题（0.5） | 0.66 / **23 ms** | 0.76 / 48 ms | **0.82** / 62 ms | 0.61 / 105 ms |
-| POPE，物体幻觉（0.5） | 0.83 / **22 ms** | 0.88 / 44 ms | **0.90** / 51 ms | 待测 |
-| SEED-Bench 图像（0.25） | 0.54 / **26 ms** | **0.72** / 61 ms | 待测 | 待测 |
-| Valen-Eval-General-5k（Valen 自己的评测集） | 0.61 / **26 ms** | 0.70 / 50 ms | **0.74** / 61 ms | **0.74** / 207 ms* |
-| OmniBench，图像 + 音频（0.25） | 0.40 | 待测（Qwen2.5-Omni-3B） | – | – |
-| MMAU test-mini，音频（约 0.25） | 0.45 | 待测（Qwen2.5-Omni-3B） | – | – |
+| 测试集（随机水平） | laya-omni | Qwen3.5-0.8B | Qwen3.5-2B | Valen（Qwen3.5-2B） | Qwen2.5-Omni-3B |
+|---|---:|---:|---:|---:|---:|
+| MMBench 英文 dev（0.25） | 0.66 / **14 ms** | 0.75 / 42 ms | **0.84** / 46 ms | 0.73 / 70 ms | – |
+| MMBench 中文 dev（0.25） | 0.60 / **14 ms** | 0.75 / 42 ms | **0.82** / 45 ms | 0.73 / 70 ms | – |
+| MMStar（0.25） | 0.37 / **14 ms** | 0.46 / 42 ms | **0.53** / 46 ms | 0.44 / 70 ms | – |
+| MME，是非题（0.5） | 0.68 / **17 ms** | 0.76 / 48 ms | **0.82** / 62 ms | 0.61 / 105 ms | – |
+| POPE，物体幻觉（0.5） | 0.84 / **16 ms** | 0.88 / 44 ms | **0.90** / 51 ms | 0.82 / 88 ms | – |
+| SEED-Bench 图像（0.25） | 0.57 / **20 ms** | 0.72 / 61 ms | **0.77** / 82 ms | 0.66 / 222 ms | – |
+| Valen-Eval-General-5k（Valen 自己的评测集） | 0.63 / **19 ms** | 0.70 / 50 ms | **0.74** / 61 ms | **0.74** / 207 ms* | – |
+| OmniBench，图像 + 音频（0.25） | 0.38 / **50 ms** | – | – | – | **0.42** / 321 ms |
+| MMAU test-mini，音频（约 0.25） | 0.45 / **20 ms** | – | – | – | **0.67** / 91 ms |
 
-laya-omni 的速度约为最小的 Qwen3.5 的两倍，并且支持音频；但在这些测试集上准确率低 5–18 个点。缩小这个差距（用更大的 VLM 做蒸馏）是目前正在做的事。说明：
+laya-omni 的速度约为最小的 Qwen3.5 的三倍，在图像测试集上准确率低 4–15 个点；音频方面 Qwen2.5-Omni-3B 明显更强（MMAU 0.67 对 0.45），但耗时是 4–6 倍。此外它能回答物体在哪（COCO 留出图片，九宫格 4 选 1，0.85）、谁在谁左边（0.85）、哪个更大（0.94）、图里有哪些物体（0.96）。说明：
 
-- Qwen3.5 的答题方式：一次前向后取选项字母（或 Yes / No）的 logit，不做生成解码，这是它最快的用法。
+- Qwen 系列的答题方式：一次前向后取选项字母（或 Yes / No）的 logit，不做生成解码，这是它最快的用法。
 - Valen 用的是它唯一公开的检查点 [Valen-Preview-0923](https://huggingface.co/Valen-Team/Valen-Preview-0923)（在推箱子任务上继续训练过），在它锁定版本的原版环境里运行；我们的评测脚本复现了它官方评测的结果（0.738 对 0.737）。*这一格是它装上线性注意力加速内核之前测的。Valen 评测集里约 12% 的题目也出现在 laya-omni 的训练数据中。
-- 耗时是和其他任务共用机器时测的中位数，干净的单独测速还没做。
+- 耗时为中位数；部分对比是和其他任务共用机器时测的。
 - 复现：`scripts/convert_bench.py` 和 `scripts/bench.py`，细节见 [docs/results.md](docs/results.md#standard-benchmarks)。
 
 完整结果、温度校准、少样本适配，以及试过但行不通的方案：[docs/results.md](docs/results.md)。
@@ -43,8 +43,8 @@ laya-omni 的速度约为最小的 Qwen3.5 的两倍，并且支持音频；但�
 | Qwen3-ASR-0.6B 音频编码器（冻结） | 1.86 亿 |
 | laya-omni 融合模块（训练） | 约 700 万 |
 
-在 RTX 4090 上，带一张图或一段 10 秒音频回答一个问题约 30–120 ms（含编码器）。
-图片默认 64 个 token；`detail=True` 用 256 个，读图中文字时更准。
+在 RTX 4090 上，带一张图回答一个问题约 14–20 ms，带一段 10 秒音频约 20 ms（均含编码器）。
+图片默认 256 个 token（`detail=False` 为 64 个，略快、略不准）。加载时会把 LoRA 增量合并进一份 Laya 编码器副本、专用于图像 / 音频请求（输出完全相同，约快四分之一，多占约 0.5 GB 内存；`Omni.load(..., merge=False)` 关闭）。
 
 ## 使用
 
@@ -52,7 +52,7 @@ laya-omni 的速度约为最小的 Qwen3.5 的两倍，并且支持音频；但�
 from laya_omni import Omni
 
 omni = Omni.load(
-    "runs/formal-v2", laya="models/laya-multilingual",
+    "runs/formal-v3", laya="models/laya-multilingual",
     image_encoder="models/siglip2-base-patch16-256",
     audio_encoder="models/qwen3-asr-0.6b-audio-encoder",
 )
@@ -77,7 +77,7 @@ omni.predict(state, questions)   # 不给图像和音频：就是原版 Laya
 
 ```bash
 pip install -e '.[web]'
-laya-omni serve --fusion runs/formal-v2 --laya models/laya-multilingual \
+laya-omni serve --fusion runs/formal-v3 --laya models/laya-multilingual \
     --image-encoder models/siglip2-base-patch16-256 \
     --audio-encoder models/qwen3-asr-0.6b-audio-encoder --examples data --port 8030
 ```
@@ -90,7 +90,7 @@ laya-omni serve --fusion runs/formal-v2 --laya models/laya-multilingual \
 
 ```bash
 python scripts/finetune.py --folders my_task/ --question "这个零件有缺陷吗？" \
-    --base runs/formal-v2 --laya models/laya-multilingual \
+    --base runs/formal-v3 --laya models/laya-multilingual \
     --image-encoder models/siglip2-base-patch16-256 --out runs/my-task
 ```
 
@@ -105,7 +105,7 @@ python scripts/finetune.py --folders my_task/ --question "这个零件有缺陷�
 
 ## 状态
 
-早期研究版本。权重：[zheqiushui/laya-omni](https://huggingface.co/zheqiushui/laya-omni)（融合模块 + 音频编码器）。已知短板：科学示意图（AI2D、TQA）、空间关系（VSR），
+早期研究版本（`formal-v3`）。权重：[zheqiushui/laya-omni](https://huggingface.co/zheqiushui/laya-omni)（融合模块 + 音频编码器）。已知短板：科学示意图（AI2D、TQA）、空间关系（VSR），
 以及需要推演「接下来会怎样」的任务（如游戏走法），它擅长的是判断「画面 / 声音里有什么」。
 
 ## 许可与致谢

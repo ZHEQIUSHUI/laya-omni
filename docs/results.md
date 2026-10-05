@@ -1,6 +1,6 @@
 # Results
 
-The released fusion is `formal-v2`: Laya multilingual (mmBERT-base), SigLIP 2
+The released fusion is `formal-v3` (formal-v2 plus COCO questions and teacher soft labels, below): Laya multilingual (mmBERT-base), SigLIP 2
 base/16 at 256 px, the Qwen3-ASR-0.6B audio encoder, and a fusion of about 7M
 trainable parameters (projectors, position and modality embeddings, row-gated
 LoRA rank 16), trained on two RTX 4090s in three steps:
@@ -34,27 +34,32 @@ environment (torch 2.6, transformers 5.4); through this harness it scores
 *Laya (text only)* answers without the image or audio: near chance, so these
 sets do need the picture or clip.
 
-Accuracy / median latency (ms):
+Accuracy / median latency (ms). laya-omni formal-v3 runs at 256 image tokens with
+the LoRA deltas merged (its default); formal-v2 at 64 tokens as first released:
 
-| Benchmark | Laya (text only) | laya-omni | laya-omni, 256 tokens | Qwen3.5-0.8B | Qwen3.5-2B | Valen |
-|---|---:|---:|---:|---:|---:|---:|
-| MMBench-EN dev | 0.283 | 0.629 / 21 | 0.646 / 21 | 0.754 / 42 | **0.837** / 46 | 0.734 / 70 |
-| &nbsp; CircularEval | 0.129 | 0.559 | 0.584 | 0.571 | **0.722** | 0.623 |
-| MMBench-CN dev | 0.277 | 0.582 / 21 | 0.590 / 20 | 0.747 / 42 | **0.820** / 45 | 0.731 / 70 |
-| &nbsp; CircularEval | 0.104 | 0.493 | 0.514 | 0.580 | **0.710** | 0.640 |
-| MMStar | 0.249 | 0.358 / 21 | 0.365 / 20 | 0.456 / 42 | **0.528** / 46 | 0.437 / 70 |
-| MME (yes / no) | 0.503 | 0.655 / 23 | 0.664 / 22 | 0.755 / 48 | **0.815** / 62 | 0.606 / 105 |
-| &nbsp; acc+ (both questions on an image) | 0.043 | 0.349 | 0.366 | 0.525 | **0.644** | 0.212 |
-| POPE | 0.500 | 0.828 / 22 | 0.836 / 22 | 0.879 / 44 | **0.900** / 51 | – |
-| SEED-Bench (image) | 0.282 | 0.536 / 26 | 0.560 / 26 | **0.719** / 61 | – | – |
-| Valen-Eval-General-5k | 0.315 | 0.614 / 26 | 0.625 / 25 | 0.704 / 50 | **0.743** / 61 | 0.738 / 207 |
-| OmniBench (image + audio) | 0.271 | 0.398 / 70 | – | – | – | – |
-| MMAU test-mini (audio) | 0.289 | 0.448 / 30 | – | – | – | – |
+| Benchmark | Laya (text only) | formal-v2 | **formal-v3** | Qwen3.5-0.8B | Qwen3.5-2B | Valen | Qwen2.5-Omni-3B |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| MMBench-EN dev | 0.283 | 0.629 / 21 | 0.664 / 14 | 0.754 / 42 | **0.837** / 46 | 0.734 / 70 | – |
+| &nbsp; CircularEval | 0.129 | 0.559 | 0.595 | 0.571 | **0.722** | 0.623 | – |
+| MMBench-CN dev | 0.277 | 0.582 / 21 | 0.598 / 14 | 0.747 / 42 | **0.820** / 45 | 0.731 / 70 | – |
+| &nbsp; CircularEval | 0.104 | 0.493 | 0.517 | 0.580 | **0.710** | 0.640 | – |
+| MMStar | 0.249 | 0.358 / 21 | 0.372 / 14 | 0.456 / 42 | **0.528** / 46 | 0.437 / 70 | – |
+| MME (yes / no) | 0.503 | 0.655 / 23 | 0.677 / 17 | 0.755 / 48 | **0.815** / 62 | 0.606 / 105 | – |
+| &nbsp; acc+ (both questions on an image) | 0.043 | 0.349 | 0.398 | 0.525 | **0.644** | 0.212 | – |
+| POPE | 0.500 | 0.828 / 22 | 0.840 / 16 | 0.879 / 44 | **0.900** / 51 | 0.818 / 88 | – |
+| SEED-Bench (image) | 0.282 | 0.536 / 26 | 0.573 / 20 | 0.719 / 61 | **0.767** / 82 | 0.664 / 222 | – |
+| Valen-Eval-General-5k | 0.315 | 0.614 / 26 | 0.629 / 19 | 0.704 / 50 | **0.743** / 61 | 0.738 / 207 | – |
+| OmniBench (image + audio) | 0.271 | 0.398 / 70 | 0.384 / 50 | – | – | – | **0.419** / 321 |
+| MMAU test-mini (audio) | 0.289 | 0.448 / 30 | 0.449 / 20 | – | – | – | **0.668** / 91 |
+| COCO location, held-out images (4 options) | – | 0.295 | **0.845** / 16 | – | – | – | – |
+| COCO left / right / above | – | 0.493 | **0.851** / 16 | – | – | – | – |
+| COCO which is bigger | – | 0.489 | **0.941** / 16 | – | – | – | – |
+| COCO which object is present | – | 0.713 | **0.959** / 16 | – | – | – | – |
 
-"–": not run yet. Qwen2.5-Omni-3B on the audio sets and a clean timing pass
-(the runs above shared the machine) are pending.
+Some comparison runs shared the machine with other jobs, so latencies are indicative.
 
-- laya-omni is about twice as fast as Qwen3.5-0.8B and 5-18 points less accurate.
+- laya-omni formal-v3 is about three times as fast as Qwen3.5-0.8B and 4-15 points less
+  accurate on the image benchmarks; on audio, Qwen2.5-Omni-3B is well ahead (MMAU).
   The gap is widest on fine-grained perception (SEED-Bench, MMBench-CN).
 - Valen's MME answers lean heavily to "no" (acc+ 0.21), and on MMBench it
   scores 0.73 where its own base model, Qwen3.5-2B, scores 0.84. Its public
@@ -200,3 +205,8 @@ many epochs), so few-shot use needs early stopping and a calibration pass.
 | Learning rate 1e-3 / LoRA 2e-4 on the full mixture | One seed stopped using the images for AI2D, ChartQA and ScienceQA in its first epoch and never recovered (AI2D 0.44 vs 0.67); another seed was fine. The formal recipe uses 5e-4 / 1e-4, 1000 warm-up steps, and probes every 2000 steps. |
 | FigureQA (synthetic charts, 1.3M questions) | Chance at 64 and at 256 tokens; dropped from training. |
 | A larger image encoder (SigLIP 2 so400m/16 at 256 px) | Same short from-scratch run as SigLIP 2 base: MMBench-EN 0.534 vs 0.514, SEED 0.423 vs 0.444, MMStar 0.307 vs 0.307, POPE 0.773 vs 0.765. No gain overall, 15% slower; the encoder is not the bottleneck. (Base at 384 px diverged in the same run and is not conclusive.) |
+| Larger LoRA rank (64, 128 instead of 16) | Short runs from scratch: standard-benchmark mean 0.449 (r64) and 0.471 (r128) against 0.518 (r16). |
+| Fully fine-tuning a copy of Laya's encoder and head (125M trainable instead of 7M) | One epoch from formal-v3: benchmark mean 0.623 against 0.621 for LoRA, same in-distribution accuracy; trainable capacity is not the bottleneck. |
+| Tiles (whole image + 2x2 crops, 64 tokens each) | Within a point of 256 tokens on every benchmark, in both directions, and 3-6 ms slower. |
+| Teacher soft labels on the training questions (Qwen3.8-27B) | No accuracy change against the same run without them (the teacher agrees with the labels on 90%+); lower held-out NLL in the probe (1.20 vs 1.30), not after calibration in formal-v3. |
+| Questions from COCO boxes, one epoch | No change on the standard benchmarks (seed noise is about a point), but location 0.31 to 0.68, size 0.55 to 0.94 and object identity 0.71 to 0.95 on held-out COCO images; kept in formal-v3. |

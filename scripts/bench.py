@@ -50,7 +50,7 @@ class LayaOmni:
         from laya_omni import Omni
 
         self.omni = Omni.load(args.fusion, laya=args.laya, image_encoder=args.image_encoder or None,
-                              audio_encoder=args.audio_encoder or None)
+                              audio_encoder=args.audio_encoder or None, merge=not args.no_merge)
         self.text_only, self.detail, self.tiles = args.text_only, args.detail, args.tiles
 
     def answer(self, row):
@@ -208,7 +208,9 @@ def main():
     ap.add_argument("--laya")
     ap.add_argument("--image-encoder", default="")
     ap.add_argument("--audio-encoder", default="")
-    ap.add_argument("--detail", action="store_true", help="laya-omni: 256 image tokens")
+    ap.add_argument("--detail", action="store_true", default=None, help="laya-omni: 256 image tokens")
+    ap.add_argument("--tokens64", dest="detail", action="store_false", help="laya-omni: 64 image tokens")
+    ap.add_argument("--no-merge", action="store_true", help="laya-omni: keep LoRA as hooks (slower, same outputs)")
     ap.add_argument("--tiles", type=int, default=None, help="laya-omni: whole image + tiles x tiles crops (default: as trained)")
     ap.add_argument("--qwen")
     ap.add_argument("--valen", help="Valen checkpoint directory")

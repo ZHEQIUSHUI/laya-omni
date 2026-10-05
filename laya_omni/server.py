@@ -1,6 +1,6 @@
 """Web demo: ask Laya typed questions about an uploaded image and/or audio clip.
 
-    laya-omni serve --fusion runs/formal-v2 --laya models/laya-multilingual \\
+    laya-omni serve --fusion runs/formal-v3 --laya models/laya-multilingual \\
         --image-encoder models/siglip2-base-patch16-256 \\
         --audio-encoder models/qwen3-asr-0.6b-audio-encoder --examples data --port 8030
 """
@@ -72,6 +72,7 @@ def create_app(omni, examples_root=None):
             "audio": omni.audio_encoder is not None,
             "device": str(omni.agent.device),
             "examples": len(examples),
+            "detail": omni.detail,
         }
 
     @app.get("/api/examples")
@@ -95,7 +96,7 @@ def create_app(omni, examples_root=None):
         audio: UploadFile | None = File(default=None),
         example_images: str = Form(""),
         example_audio: str = Form(""),
-        detail: bool = Form(False),
+        detail: bool | None = Form(None),
         compare: bool = Form(True),
     ):
         try:
@@ -125,6 +126,7 @@ def create_app(omni, examples_root=None):
         except ValueError as e:
             raise HTTPException(400, str(e))
         elapsed = (time.perf_counter() - t0) * 1000
+        detail = omni.detail if detail is None else detail
         out = {"result": result, "ms": round(elapsed, 1), "tokens": 256 if detail else 64,
                "inputs": {"images": len(imgs), "audio_seconds": round(len(wav) / 16000, 2) if wav is not None else 0}}
         if compare and (image is not None or wav is not None):

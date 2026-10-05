@@ -39,7 +39,7 @@ each row can ask its own question), or a laya-omni jsonl (see the end).
 ```bash
 python scripts/finetune.py \
     --folders my_task/ --question "Is the part defective?" \
-    --base runs/formal-v2 --laya models/laya-multilingual \
+    --base runs/formal-v3 --laya models/laya-multilingual \
     --image-encoder models/siglip2-base-patch16-256 \
     --audio-encoder models/qwen3-asr-0.6b-audio-encoder \
     --out runs/my-task
